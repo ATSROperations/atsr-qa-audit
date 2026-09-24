@@ -24,20 +24,23 @@ const CONFIG = {
     { name: "BD Manager", role: "BD Manager" },
   ],
 
-  // RTOs. Picking one sets the compliance status for the audit. "Other" is always offered.
-  // notes: shown above the checklist for compliant colleges so the auditor knows what
-  // "followed the college's process" means for this RTO. Add one line per rule.
-  RTOS: [
-    {
-      name: "Brighton Pacific Pty T/A AIBT Global",
-      short: "AIBT",
-      compliant: true,
-      notes: [
-        "Add AIBT process rules here, one per line (portal, forms, kit, per-qualification conditions).",
-      ],
-    },
-    // { name: "...", short: "...", compliant: false, notes: [] },
-  ],
+  // RTOs and qualifications come from js/master-data.js (built from the ATSR Master File).
+  //
+  // Which compliance levels follow the college-specific process, and which the generic
+  // checklist. The auditor can still switch the track on an audit.
+  TRACK_BY_LEVEL: {
+    "Compliant": "compliant",
+    "Less Compliant": "noncompliant",   // CONFIRM: generic checklist or college-specific?
+    "Non Compliant": "noncompliant",
+  },
+
+  // College process notes, keyed by RTO code. Shown above the checklist on files that
+  // follow the college-specific process. One rule per line.
+  COLLEGE_NOTES: {
+    "41138": [
+      "Add AIBT process rules here, one per line (portal, forms, kit, per-qualification conditions).",
+    ],
+  },
 
   // Follow-up cadence reminders, shown above the checklist. The manual's cadence is the
   // compliant one. Non-compliant is lighter in practice - set the actual cadence here.
@@ -60,6 +63,7 @@ const CONFIG = {
   cadence: [
     "Completed audit: one Posted (or Soft Copy Received) file per admin per week, end to end.",
     "Ongoing audit: one live file per admin per week. The stage decides which checks apply.",
+    "Cancelled audit: spot-check cancelled files, for example two a month.",
     "New hires: every file for the first 10 working days, then 3 a week until two consecutive Pass results.",
     "Admin Lead audits the admin team. COO audits the Admin Lead monthly.",
   ],

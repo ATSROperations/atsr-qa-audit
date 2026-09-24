@@ -17,12 +17,12 @@
   const itemById = (id) => CRITERIA.items.find(i => i.id === id);
 
   // Checks in scope for a file at this stage with this compliance status, in phase order.
-  function scopeItems(stageLetter, compliant) {
+  function scopeItems(stageLetter, compliant, cancelled) {
     const st = stageByLetter(stageLetter); if (!st) return [];
     const ck = compKey(compliant);
     const order = CRITERIA.phases.map(p => p.id);
     return CRITERIA.items
-      .filter(it => it.from <= st.rank && (!it.only || it.only.includes(stageLetter)) && (it.for === "all" || it.for === ck))
+      .filter(it => it.from <= st.rank && (!it.only || it.only.includes(stageLetter)) && (it.for === "all" || it.for === ck) && (!it.cancelled || !!cancelled))
       .sort((a, b) => order.indexOf(a.phase) - order.indexOf(b.phase));
   }
   const slotsInScope = (items, ck) => CRITERIA.slots.filter(s => items.some(it => ownerOf(it, ck) === s.id));
@@ -85,8 +85,13 @@
     const el = $("#status"); el.textContent = msg; el.className = "status " + kind;
     if (msg) setTimeout(() => { if (el.textContent === msg) { el.textContent = ""; el.className = "status"; } }, 3500);
   }
-  const auditLabel = (a) => (a.auditType === "completed" ? "Completed" : "Ongoing") + " at " + (stageByLetter(a.stage)?.name || a.stage);
-  const compLabel = (c) => c ? "Compliant" : "Non-compliant";
+  const auditLabel = (a) => a.auditType === "cancelled"
+    ? "Cancelled (after " + (stageByLetter(a.stage)?.name || a.stage) + ")"
+    : (a.auditType === "completed" ? "Completed" : "Ongoing") + " at " + (stageByLetter(a.stage)?.name || a.stage);
+  const compLabel = (c) => c ? "College-specific process" : "Generic checklist";
+  const trackForLevel = (level) => (CONFIG.TRACK_BY_LEVEL[level] || "noncompliant") === "compliant";
+  const rtoByCode = (code) => MASTER.rtos.find(r => r.code === String(code));
+  const qualByCode = (code) => MASTER.qualifications.find(q => q.code.toUpperCase() === String(code).trim().toUpperCase());
 
   // ---- home ---------------------------------------------------------------
   function renderHome() {
@@ -132,7 +137,7 @@
             <thead><tr><th>Audited</th><th>File</th><th>Type</th><th>RTO</th><th>Score</th><th>Outcome</th></tr></thead>
             <tbody>${recent.map(a => `<tr onclick="location.hash='#/audit/${esc(a.id)}'">
               <td>${fmtDate(a.date)}</td><td>${esc(a.fileRef || "-")}</td><td>${esc(auditLabel(a))}</td>
-              <td>${esc(a.rtoShort || a.rto || "-")} <span class="muted small">${esc(compLabel(a.compliant))}</span></td>
+              <td>${esc(a.rtoCode ? a.rtoCode : (a.rto || "-"))} <span class="muted small">${esc(a.complianceLevel || compLabel(a.compliant))}</span></td>
               <td>${pct(a.summary.score)}</td><td>${badge(a.summary)}</td></tr>`).join("")}</tbody>
           </table></div>` : `<p class="muted">Nothing logged yet.</p>`}
         </div>
@@ -186,14 +191,14 @@
     if (!team.length) { view().innerHTML = `<p class="empty">Add the team first. <a href="#/team">Manage team</a></p>`; return; }
 
     const draft = {
-      auditType: "completed", stage: "G", fileRef: "", receivedDate: "", date: today(),
+      auditType: "completed", stage: "G", fileRef: "", qualification: "", qualOther: "", receivedDate: "", date: today(),
       auditor: localStorage.getItem("atsr_qa_auditor") || "",
-      rtoIndex: CONFIG.RTOS.length ? "0" : "other", rtoOther: "", compliant: CONFIG.RTOS.length ? !!CONFIG.RTOS[0].compliant : false,
-      qualification: "", people: {}, results: {}, coaching: "",
+      rtoCode: "", rtoOther: "", compliant: false,
+      people: {}, results: {}, coaching: "",
     };
-    const rtoName = () => draft.rtoIndex === "other" ? draft.rtoOther.trim() : CONFIG.RTOS[Number(draft.rtoIndex)].name;
-    const rtoShort = () => draft.rtoIndex === "other" ? draft.rtoOther.trim() : (CONFIG.RTOS[Number(draft.rtoIndex)].short || CONFIG.RTOS[Number(draft.rtoIndex)].name);
-    const rtoNotes = () => draft.rtoIndex === "other" ? [] : (CONFIG.RTOS[Number(draft.rtoIndex)].notes || []);
+    const cancelled = () => draft.auditType === "cancelled";
+    const rto = () => draft.rtoCode && draft.rtoCode !== "other" ? rtoByCode(draft.rtoCode) : null;
+    const rtoName = () => rto() ? rto().name : draft.rtoOther.trim();
     const firstByRole = (role) => team.find(m => m.role === role);
     function defaultPeople() {
       const ck = compKey(draft.compliant); const p = {};
@@ -206,6 +211,20 @@
     }
     draft.people = defaultPeople();
 
+    const levels = ["Compliant", "Less Compliant", "Non Compliant"];
+    const active = MASTER.rtos.filter(r => !r.archived);
+    const archived = MASTER.rtos.filter(r => r.archived);
+    const opt = (r) => `<option value="${esc(r.code)}">${esc(r.name)} - ${esc(r.code)}</option>`;
+    const rtoOptions = `<option value="">Select the RTO</option>` +
+      levels.map(l => { const list = active.filter(r => r.level === l); return list.length ? `<optgroup label="${esc(l)}">${list.map(opt).join("")}</optgroup>` : ""; }).join("") +
+      (archived.length ? `<optgroup label="Archived RTOs">${archived.map(opt).join("")}</optgroup>` : "") +
+      `<option value="other">Other (type it)</option>`;
+
+    const packages = [...new Set(MASTER.qualifications.map(q => q.package || "Other"))].sort();
+    const qualOptions = `<option value="">Select the qualification</option>` +
+      packages.map(pk => `<optgroup label="${esc(pk)}">${MASTER.qualifications.filter(q => (q.package || "Other") === pk).map(q => `<option value="${esc(q.code)}">${esc(q.code)} - ${esc(q.title)}</option>`).join("")}</optgroup>`).join("") +
+      `<option value="other">Other (type it)</option>`;
+
     view().innerHTML = `
       <nav class="crumbs"><a href="#/">Team</a> / New audit</nav>
       <section class="hero"><div><h1>New audit</h1><p class="muted">Fill in the file first. The checks below adjust to the audit type, the stage and the college.</p></div></section>
@@ -213,26 +232,26 @@
         <div class="audit-main">
           <div class="head-block">
             <div class="seg wide" role="group" aria-label="Audit type">
-              <button type="button" data-type="completed" class="on">Completed file (end to end)</button>
-              <button type="button" data-type="ongoing">Ongoing file (at its current stage)</button>
+              <button type="button" data-type="completed" class="on">Completed file</button>
+              <button type="button" data-type="ongoing">Ongoing file</button>
+              <button type="button" data-type="cancelled">Cancelled file</button>
             </div>
             <div class="meta-grid three">
-              <label>Stage at audit <select id="f-stage"></select></label>
+              <label><span id="stage-label">Stage at audit</span> <select id="f-stage"></select></label>
               <label>File / opportunity <input id="f-file" type="text" placeholder="e.g. Anita Sharma_CHC40221" required></label>
-              <label>Qualification <input id="f-qual" type="text" placeholder="e.g. CHC40221"></label>
+              <label>Auditor <input id="f-auditor" type="text" value="${esc(draft.auditor)}" placeholder="Your name" required></label>
               <label>File received <input id="f-received" type="date" required></label>
               <label>Audit date <input id="f-date" type="date" value="${today()}" required></label>
-              <label>Auditor <input id="f-auditor" type="text" value="${esc(draft.auditor)}" placeholder="Your name" required></label>
-              <label>RTO / college
-                <select id="f-rto">${CONFIG.RTOS.map((r, i) => `<option value="${i}">${esc(r.short ? r.short + " - " + r.name : r.name)}</option>`).join("")}<option value="other">Other (type it)</option></select>
+              <label>Checklist track
+                <select id="f-comp"><option value="1">College-specific process</option><option value="0" selected>Generic checklist</option></select>
               </label>
-              <label id="rto-other-wrap" hidden>RTO name <input id="f-rto-other" type="text" placeholder="RTO name"></label>
-              <label>College type
-                <select id="f-comp"><option value="1">Compliant</option><option value="0">Non-compliant</option></select>
-              </label>
+              <label class="span3">RTO <select id="f-rto">${rtoOptions}</select></label>
+              <label id="rto-other-wrap" class="span3" hidden>RTO name and code <input id="f-rto-other" type="text" placeholder="RTO name and code"></label>
+              <label class="span3">Qualification <select id="f-qual">${qualOptions}</select></label>
+              <label id="qual-other-wrap" class="span3" hidden>Qualification code and title <input id="f-qual-other" type="text" placeholder="e.g. CPC30220 Certificate III in Carpentry"></label>
             </div>
+            <p id="file-facts" class="facts"></p>
             <div id="people" class="people"></div>
-            <p id="days" class="muted small"></p>
           </div>
           <div id="reminders"></div>
           <div id="items"></div>
@@ -246,28 +265,37 @@
     // ---- header wiring
     function fillStages() {
       const sel = $("#f-stage");
-      const opts = CRITERIA.stages.filter(s => s.type === draft.auditType);
+      const opts = CRITERIA.stages.filter(s => s.type === (cancelled() ? "ongoing" : draft.auditType));
       if (!opts.some(s => s.letter === draft.stage)) draft.stage = opts[opts.length - 1].letter;
+      $("#stage-label").textContent = cancelled() ? "Last stage before cancelling" : "Stage at audit";
       sel.innerHTML = opts.map(s => `<option value="${s.letter}" ${s.letter === draft.stage ? "selected" : ""}>${esc(s.name)}</option>`).join("");
     }
     function fillPeople() {
-      const items = scopeItems(draft.stage, draft.compliant);
+      const items = scopeItems(draft.stage, draft.compliant, cancelled());
       const slots = slotsInScope(items, compKey(draft.compliant));
       $("#people").innerHTML = `<div class="people-title">Who handled this file</div><div class="people-grid">` +
         slots.map(s => `<label>${esc(s.label)}<select data-slot="${s.id}"><option value="">Unassigned</option>${team.map(m => `<option value="${m.id}" ${draft.people[s.id] === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select></label>`).join("") + `</div>`;
       $("#people").querySelectorAll("select[data-slot]").forEach(sel => sel.addEventListener("change", () => { draft.people[sel.dataset.slot] = sel.value; renderItems(); }));
     }
-    function fillDays() {
+    function fillFacts() {
+      const bits = [];
+      const r = rto();
+      if (r) bits.push(`<span><b>Compliance level</b> ${esc(r.level || "-")}${r.archived ? " (archived RTO)" : ""}</span>`, `<span><b>Process To</b> ${esc(r.processTo || "-")}</span>`, r.type ? `<span><b>Type</b> ${esc(r.type)}</span>` : "");
+      const q = qualByCode(draft.qualification);
+      if (q) bits.push(`<span><b>${esc(q.code)}</b> ${esc(q.title)}</span>`, `<span><b>Entry requirement</b> ${esc(q.entry || "-")}</span>`);
       const d = daysBetween(draft.receivedDate, draft.date);
-      $("#days").textContent = d === null ? "" : d + " days from file received to audit date.";
+      if (d !== null) bits.push(`<span><b>${d} days</b> from file received to audit</span>`);
+      $("#file-facts").innerHTML = bits.filter(Boolean).join("");
     }
     function fillReminders() {
       const ck = compKey(draft.compliant);
-      const notes = draft.compliant ? rtoNotes() : [];
+      const notes = rto() ? (CONFIG.COLLEGE_NOTES[rto().code] || []) : [];
+      const title = rto() ? rto().name : (draft.rtoOther.trim() || "College");
       $("#reminders").innerHTML = `
-        ${draft.compliant ? `<div class="remind college"><strong>${esc(rtoShort() || "College")} process notes</strong>${notes.length ? `<ul>${notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : `<p class="muted small">No notes recorded for this college yet. Add them in config.js under RTOS.</p>`}</div>` : ""}
-        <div class="remind"><strong>Follow-up cadence, ${esc(compLabel(draft.compliant).toLowerCase())} file</strong><ul>${(CONFIG.CADENCE[ck] || []).map(c => `<li>${esc(c)}</li>`).join("")}</ul></div>`;
+        ${draft.compliant ? `<div class="remind college"><strong>${esc(title)}: process notes</strong>${notes.length ? `<ul>${notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : `<p class="muted small">No notes recorded for this college yet. Add them in config.js under COLLEGE_NOTES, keyed by RTO code.</p>`}</div>` : ""}
+        <div class="remind"><strong>Follow-up cadence, ${esc(compLabel(draft.compliant).toLowerCase())}</strong><ul>${(CONFIG.CADENCE[ck] || []).map(c => `<li>${esc(c)}</li>`).join("")}</ul></div>`;
     }
+    const refreshTrack = () => { draft.people = {}; draft.people = defaultPeople(); fillPeople(); fillReminders(); renderItems(); };
 
     $("#audit-form").querySelectorAll("[data-type]").forEach(b => b.addEventListener("click", () => {
       draft.auditType = b.dataset.type;
@@ -276,29 +304,31 @@
     }));
     $("#f-stage").addEventListener("change", e => { draft.stage = e.target.value; fillPeople(); renderItems(); });
     $("#f-file").addEventListener("input", e => draft.fileRef = e.target.value);
-    $("#f-qual").addEventListener("input", e => draft.qualification = e.target.value);
-    $("#f-received").addEventListener("change", e => { draft.receivedDate = e.target.value; fillDays(); });
-    $("#f-date").addEventListener("change", e => { draft.date = e.target.value; fillDays(); });
+    $("#f-qual").addEventListener("change", e => {
+      draft.qualification = e.target.value === "other" ? draft.qualOther : e.target.value;
+      $("#qual-other-wrap").hidden = e.target.value !== "other";
+      fillFacts();
+    });
+    $("#f-qual-other").addEventListener("input", e => { draft.qualOther = e.target.value; draft.qualification = e.target.value; });
+    $("#f-received").addEventListener("change", e => { draft.receivedDate = e.target.value; fillFacts(); });
+    $("#f-date").addEventListener("change", e => { draft.date = e.target.value; fillFacts(); });
     $("#f-auditor").addEventListener("input", e => draft.auditor = e.target.value);
     $("#f-rto").addEventListener("change", e => {
-      draft.rtoIndex = e.target.value;
-      $("#rto-other-wrap").hidden = draft.rtoIndex !== "other";
-      if (draft.rtoIndex !== "other") { draft.compliant = !!CONFIG.RTOS[Number(draft.rtoIndex)].compliant; $("#f-comp").value = draft.compliant ? "1" : "0"; }
-      draft.people = {}; draft.people = defaultPeople();
-      fillPeople(); fillReminders(); renderItems();
+      draft.rtoCode = e.target.value;
+      $("#rto-other-wrap").hidden = draft.rtoCode !== "other";
+      if (rto()) { draft.compliant = trackForLevel(rto().level); $("#f-comp").value = draft.compliant ? "1" : "0"; }
+      fillFacts(); refreshTrack();
     });
     $("#f-rto-other").addEventListener("input", e => { draft.rtoOther = e.target.value; fillReminders(); });
-    $("#f-comp").addEventListener("change", e => { draft.compliant = e.target.value === "1"; draft.people = {}; draft.people = defaultPeople(); fillPeople(); fillReminders(); renderItems(); });
+    $("#f-comp").addEventListener("change", e => { draft.compliant = e.target.value === "1"; refreshTrack(); });
     $("#f-coaching").addEventListener("input", e => draft.coaching = e.target.value);
-    $("#f-comp").value = draft.compliant ? "1" : "0";
-    $("#f-rto").value = draft.rtoIndex;
-    $("#rto-other-wrap").hidden = draft.rtoIndex !== "other";
 
     // ---- checklist
     function renderItems() {
-      const items = scopeItems(draft.stage, draft.compliant);
+      const items = scopeItems(draft.stage, draft.compliant, cancelled());
       const ck = compKey(draft.compliant);
       let html = "", lastPhase = null, n = 0;
+      if (cancelled()) html += `<p class="muted small">Score the stages the file went through before it was cancelled. Use N/A for any step that never happened.</p>`;
       items.forEach(it => {
         if (it.phase !== lastPhase) { const ph = phaseById(it.phase); html += `<h3 class="phase">${esc(ph.title)} <span class="muted">${esc(ph.sop)}</span></h3>`; lastPhase = it.phase; }
         n++;
@@ -339,10 +369,11 @@
 
     const panel = $("#result-panel");
     function refreshPanel() {
-      const items = scopeItems(draft.stage, draft.compliant);
+      const items = scopeItems(draft.stage, draft.compliant, cancelled());
       const s = computeSummary(items, draft.results, draft.compliant, draft.people);
       const missingNotes = items.some(it => draft.results[it.id]?.result === "fail" && !(draft.results[it.id].note || "").trim());
       const unassigned = s.byPerson.some(p => !p.memberId);
+      const noRto = !rto() && !draft.rtoOther.trim();
       panel.innerHTML = `
         <div class="score ${outcomeClass(s)}">
           <div class="big">${pct(s.score)}</div>
@@ -356,26 +387,33 @@
         <div class="people-scores">${s.byPerson.map(p => `<div class="ps"><div><strong>${esc(p.name)}</strong><span class="muted small">${esc(p.slots.join(", "))}</span></div><div class="ps-r ${outcomeClass(p)}">${pct(p.score)}</div></div>`).join("")}</div>
         ${missingNotes ? `<p class="warn small">Every Fail needs a note.</p>` : ""}
         ${unassigned ? `<p class="warn small">Assign a person to every part in scope.</p>` : ""}
-        <button type="submit" class="btn primary block" ${s.unscored || missingNotes || unassigned || !items.length ? "disabled" : ""}>Save audit</button>
+        ${noRto ? `<p class="warn small">Select the RTO.</p>` : ""}
+        <button type="submit" class="btn primary block" ${s.unscored || missingNotes || unassigned || noRto || !items.length ? "disabled" : ""}>Save audit</button>
         <a class="btn ghost block" href="#/">Cancel</a>
         <p class="muted small">Checks v${esc(CRITERIA.version)}. ${items.length} in scope.</p>`;
     }
 
-    fillStages(); fillPeople(); fillReminders(); fillDays(); renderItems();
+    fillStages(); fillPeople(); fillFacts(); fillReminders(); renderItems();
+    $("#rto-other-wrap").hidden = true;
+    $("#qual-other-wrap").hidden = true;
 
     $("#audit-form").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const items = scopeItems(draft.stage, draft.compliant);
+      const items = scopeItems(draft.stage, draft.compliant, cancelled());
       const auditor = draft.auditor.trim();
       localStorage.setItem("atsr_qa_auditor", auditor);
       const ck = compKey(draft.compliant);
       const peopleNames = {}; Object.keys(draft.people).forEach(k => { const m = memberById(draft.people[k]); if (m) peopleNames[k] = m.name; });
+      const r = rto(); const q = qualByCode(draft.qualification);
       const audit = {
         id: uid("QA"), type: "audit",
         auditType: draft.auditType, stage: draft.stage, stageName: stageByLetter(draft.stage).name,
-        fileRef: draft.fileRef.trim(), qualification: draft.qualification.trim(),
+        fileRef: draft.fileRef.trim(),
+        qualification: q ? q.code + " " + q.title : draft.qualification.trim(),
         receivedDate: draft.receivedDate, date: draft.date, daysInPipeline: daysBetween(draft.receivedDate, draft.date),
-        auditor, rto: rtoName(), rtoShort: rtoShort(), compliant: draft.compliant,
+        auditor,
+        rto: rtoName(), rtoCode: r ? r.code : "", complianceLevel: r ? r.level : "", processTo: r ? r.processTo : "",
+        compliant: draft.compliant,
         people: Object.fromEntries(slotsInScope(items, ck).map(s => [s.id, draft.people[s.id] || ""])), peopleNames,
         itemIds: items.map(it => it.id),
         results: Object.fromEntries(items.map(it => [it.id, { result: draft.results[it.id]?.result || null, note: (draft.results[it.id]?.note || "").trim(), owner: ownerOf(it, ck) }])),
@@ -414,7 +452,7 @@
       <nav class="crumbs"><a href="#/">Team</a> / ${esc(a.id)}</nav>
       <section class="hero">
         <div><h1>${esc(a.fileRef || "Audit")}</h1>
-          <p class="muted">${esc(auditLabel(a))}. ${esc(a.rto || "RTO not recorded")}, ${esc(compLabel(a.compliant).toLowerCase())}${a.qualification ? ", " + esc(a.qualification) : ""}. Received ${fmtDate(a.receivedDate)}, audited ${fmtDate(a.date)}${a.daysInPipeline !== null ? " (" + a.daysInPipeline + " days)" : ""} by ${esc(a.auditor || "-")}.</p></div>
+          <p class="muted">${esc(auditLabel(a))}. ${esc(a.rto || "RTO not recorded")}${a.rtoCode ? " (" + esc(a.rtoCode) + ")" : ""}${a.complianceLevel ? ", " + esc(a.complianceLevel) : ""}, ${esc(compLabel(a.compliant).toLowerCase())}${a.qualification ? ". " + esc(a.qualification) : ""}. Received ${fmtDate(a.receivedDate)}, audited ${fmtDate(a.date)}${a.daysInPipeline !== null ? " (" + a.daysInPipeline + " days)" : ""} by ${esc(a.auditor || "-")}.</p></div>
         <div class="hero-actions"><button class="btn primary" id="btn-pdf">Download PDF</button><button class="btn danger" id="btn-del">Delete</button></div>
       </section>
       <div class="audit">
@@ -472,14 +510,14 @@
 
   // ---- criteria view ------------------------------------------------------
   function renderCriteria() {
-    const tag = (it) => [it.for === "all" ? "" : compLabel(it.for === "compliant") + " only", "from " + (CRITERIA.stages.find(s => s.rank === it.from)?.name || it.from), it.only ? "only at " + it.only.map(l => stageByLetter(l).name).join(", ") : ""].filter(Boolean).join(", ");
+    const tag = (it) => [it.for === "all" ? "" : compLabel(it.for === "compliant") + " only", it.cancelled ? "" : "from " + (CRITERIA.stages.find(s => s.rank === it.from)?.name || it.from), it.only ? "only at " + it.only.map(l => stageByLetter(l).name).join(", ") : "", it.cancelled ? "cancelled files only" : ""].filter(Boolean).join(", ");
     view().innerHTML = `
       <nav class="crumbs"><a href="#/">Team</a> / Checks</nav>
       <section class="hero"><div><h1>Checks v${esc(CRITERIA.version)}</h1><p class="muted">Read-only view of js/criteria.js. ${CRITERIA.items.length} checks, ${CRITERIA.items.filter(i => i.critical).length} critical. Based on the ${esc(CRITERIA.manual)}.</p></div></section>
       ${CRITERIA.phases.map(ph => { const its = CRITERIA.items.filter(i => i.phase === ph.id); return its.length ? `
         <details class="card-def" open>
           <summary><strong>${esc(ph.title)}</strong> <span class="muted">${esc(ph.sop)}, ${its.length} checks</span></summary>
-          <ol class="def-list">${its.map(it => `<li>${esc(it.text)} <span class="ref">${esc(it.id)}, ${esc(it.ref)}. Owner: ${esc(typeof it.owner === "string" ? slotById(it.owner).label : "Admin Lead (non-compliant) / Review (compliant)")}. ${esc(tag(it))}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</li>`).join("")}</ol>
+          <ol class="def-list">${its.map(it => `<li>${esc(it.text)} <span class="ref">${esc(it.id)}, ${esc(it.ref)}. Owner: ${esc(typeof it.owner === "string" ? slotById(it.owner).label : "Admin Lead (generic) / Review and submission (college-specific)")}. ${esc(tag(it))}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</li>`).join("")}</ol>
         </details>` : ""; }).join("")}`;
   }
 

@@ -5,7 +5,9 @@
   An audit is of a FILE. The app shows only the checks that apply to that file:
     - from:  the earliest pipeline stage at which the check can be judged (see stages, rank)
     - only:  optional, the check appears only when the file is at one of these stages
-    - for:   "all", "compliant" or "noncompliant" (the RTO's compliance status)
+    - cancelled: true means the check appears only on cancelled-file audits
+    - for:   "all", "compliant" or "noncompliant" (the checklist track, see TRACK_BY_LEVEL
+             in config.js: which compliance levels follow the college-specific process)
     - owner: which person on the file is answerable. A string, or an object keyed by
              compliance when the owner changes with the file type.
 
@@ -18,7 +20,7 @@
 */
 
 const CRITERIA = {
-  version: "2.0",
+  version: "2.1",
   manual: "B2B Operations Manual v2.0 (ATSR-OPS-B2B-MANUAL)",
   thresholds: { pass: 0.9, coaching: 0.75 },
 
@@ -32,6 +34,8 @@ const CRITERIA = {
     { letter: "F", name: "Soft Copy Received", rank: 5, type: "completed" },
     { letter: "G", name: "Posted", rank: 6, type: "completed" },
   ],
+  // Cancelled (H) is audited against the last stage the file reached before it was
+  // cancelled, plus the cancellation checks. The auditor picks that last stage.
 
   // Who is answerable. The audit header assigns a team member to each slot in scope.
   slots: [
@@ -40,6 +44,7 @@ const CRITERIA = {
     { id: "review", label: "Review and submission", defaultRole: { noncompliant: "Drafting Admin", compliant: null } },
     { id: "lead", label: "Admin Lead", defaultRole: "Admin Lead" },
     { id: "posting", label: "Posting", defaultRole: "BD Manager" },
+    { id: "cancel", label: "Cancellation", defaultRole: "Admin Lead" },
   ],
 
   phases: [
@@ -52,6 +57,7 @@ const CRITERIA = {
     { id: "submission", title: "Submission and RTO", sop: "SOP 10" },
     { id: "softcopy", title: "Soft copy", sop: "SOP 11" },
     { id: "posting", title: "Hard copy and posting", sop: "SOP 11" },
+    { id: "cancel", title: "Cancellation", sop: "SOP 12" },
   ],
 
   items: [
@@ -140,5 +146,19 @@ const CRITERIA = {
       text: "Hard copy requested with 4.3 if late, and checked against the verified soft copy before posting." },
     { id: "PO-02", phase: "posting", owner: "posting", from: 6, for: "all", critical: false, ref: "SOP 11 / Appendix A",
       text: "Posted in the week the soft copy arrived. Postage date and tracking reference recorded in the opportunity notes. Stage Posted, status Won." },
+
+    // ---- Cancellation (cancelled-file audits only) --------------------------
+    { id: "CX-01", phase: "cancel", owner: "cancel", from: 1, cancelled: true, for: "all", critical: true, ref: "SOP 12 / Appendix A",
+      text: "Lost Reason selected before the stage moved to Cancelled, and the status confirmed afterwards: Lost when the client walked away, Abandoned when ATSR declined." },
+    { id: "CX-02", phase: "cancel", owner: "cancel", from: 1, cancelled: true, for: "all", critical: false, ref: "SOP 12",
+      text: "Dated note on the opportunity explaining the reason in plain words." },
+    { id: "CX-03", phase: "cancel", owner: "cancel", from: 1, cancelled: true, for: "all", critical: false, ref: "SOP 12 / SOP 14",
+      text: "Agent told in writing, in the existing thread." },
+    { id: "CX-04", phase: "cancel", owner: "cancel", from: 1, cancelled: true, for: "all", critical: true, ref: "SOP 12",
+      text: "Money accounted for: refund decided by the CEO, proof of refund attached to the opportunity where money went back, or a note where funds are kept for re-lodging." },
+    { id: "CX-05", phase: "cancel", owner: "cancel", from: 1, cancelled: true, for: "all", critical: false, ref: "SOP 12",
+      text: "Right call between cancel and re-lodge: a change of RTO only keeps the opportunity and updates RTO, Compliance Level and Process To; a change of qualification cancels (Lost Reason: changed qualification) and a new opportunity is created." },
+    { id: "CX-06", phase: "cancel", owner: "cancel", from: 1, cancelled: true, for: "all", critical: false, ref: "SOP 12 / SOP 10",
+      text: "Where the RTO initiated the cancellation, or the agent disputed it or the refund amount, it was escalated (Admin Lead > BD Manager > CEO)." },
   ],
 };

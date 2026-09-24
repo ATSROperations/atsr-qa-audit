@@ -22,7 +22,7 @@ function buildAuditPdf(audit, jsPDFCtor, logoDataUrl) {
   doc.setTextColor(255, 255, 255); doc.setFont("helvetica", "bold"); doc.setFontSize(14);
   doc.text("B2B QA Audit", W - M, 12, { align: "right" });
   doc.setFont("helvetica", "normal"); doc.setFontSize(9);
-  doc.text((audit.auditType === "completed" ? "Completed file" : "Ongoing file") + "  |  checks v" + audit.criteriaVersion, W - M, 18, { align: "right" });
+  doc.text(({ completed: "Completed file", ongoing: "Ongoing file", cancelled: "Cancelled file" }[audit.auditType] || "File") + "  |  checks v" + audit.criteriaVersion, W - M, 18, { align: "right" });
 
   // title
   let y = 38;
@@ -34,8 +34,9 @@ function buildAuditPdf(audit, jsPDFCtor, logoDataUrl) {
   y += 12;
   doc.setFontSize(9); doc.setTextColor(...C.charcoal);
   const meta = [
-    ["Stage at audit", stage ? stage.name : audit.stage, "Audit date", fmt(audit.date)],
-    ["RTO / college", (audit.rto || "-") + "  (" + (audit.compliant ? "compliant" : "non-compliant") + ")", "File received", fmt(audit.receivedDate) + (audit.daysInPipeline !== null && audit.daysInPipeline !== undefined ? "  (" + audit.daysInPipeline + " days to audit)" : "")],
+    [audit.auditType === "cancelled" ? "Cancelled after" : "Stage at audit", stage ? stage.name : audit.stage, "Audit date", fmt(audit.date)],
+    ["RTO", (audit.rto || "-") + (audit.rtoCode ? " (" + audit.rtoCode + ")" : ""), "File received", fmt(audit.receivedDate) + (audit.daysInPipeline !== null && audit.daysInPipeline !== undefined ? "  (" + audit.daysInPipeline + " days to audit)" : "")],
+    ["Compliance", (audit.complianceLevel ? audit.complianceLevel + ", " : "") + (audit.compliant ? "college-specific process" : "generic checklist"), "Process To", audit.processTo || "-"],
     ["Qualification", audit.qualification || "-", "Auditor", audit.auditor || "-"],
     ["Audit ID", audit.id, "", ""],
   ];

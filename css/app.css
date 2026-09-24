@@ -214,3 +214,12 @@ h3.phase .muted { font-weight: 400; font-size: 12px; margin-left: 6px; }
   .seg.wide button { border-left: 0; border-top: 1px solid var(--line); }
   .seg.wide button:first-child { border-top: 0; }
 }
+
+/* v2.1: file facts line, wide label */
+.meta-grid .span2 { grid-column: span 2; }
+.facts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 0; font-size: 13px; color: var(--charcoal); }
+.facts:empty { display: none; }
+.facts b { color: var(--teal); font-weight: 600; margin-right: 4px; }
+.seg.wide button { white-space: nowrap; }
+@media (max-width: 860px) { .meta-grid .span2 { grid-column: span 2; } }
+.meta-grid .span3 { grid-column: 1 / -1; }
