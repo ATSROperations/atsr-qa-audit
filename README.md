@@ -15,9 +15,10 @@ js/master-data.js   RTOs and qualifications, built from the ATSR Master File
 tools/              build_master_data.py rebuilds master-data.js from the Master File
 js/storage.js       storage adapter (browser-only or shared endpoint)
 js/pdf.js           PDF export
-js/logo.js          logo as a data URL for the PDF
+js/logo.js          logo and tick watermark as data URLs for the PDF
 js/app.js           screens, routing, scoring
-assets/             logo and Host Grotesk fonts
+js/theme.js         light / dark toggle
+assets/             ATSR logos (light and dark versions), tick favicon and watermark, Host Grotesk fonts
 ```
 
 ## Hosting (free)
@@ -96,3 +97,9 @@ Everything is in `js/criteria.js`.
 ## PDF
 
 Download PDF on any audit produces a branded A4 PDF: file details, stage, RTO and college type, days from receipt to audit, file score and outcome, a per-person table, the findings grouped by phase with who was answerable and the notes, the coaching note, and the manual and checks version in the footer. File name `QA_<file>_<date>_<completed|ongoing>.pdf`. The PDF library loads from cdnjs; the rest of the app works offline.
+
+## Light and dark mode
+
+The app follows the device's light or dark setting on first visit. The sun / moon button in the top bar switches it and remembers the choice in that browser. The top bar uses the dark-text ATSR logo in light mode and the light-text logo in dark mode. The favicon is the gradient tick; a passing score shows a faint tick watermark. PDFs are always light (they are printed and filed), with the ATSR logo in the header and the mint tick as a page watermark.
+
+Brand images live in `assets/` (web) and `js/logo.js` (PDF). To swap the logo, replace `assets/logo-h.png` and `assets/logo-h-w.png` with same-named files; for the PDF, regenerate `js/logo.js` from the new PNGs.
