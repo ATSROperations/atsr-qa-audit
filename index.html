@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ATSR B2B QA Audit</title>
+  <link rel="icon" href="assets/logo.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-in">
+      <a class="brand" href="#/"><img src="assets/logo.png" alt="ATSR"><span>B2B QA Audit</span></a>
+      <nav>
+        <a href="#/">Team</a>
+        <a href="#/criteria">Checks</a>
+        <a href="#/new">New audit</a>
+        <a href="#/team">Manage team</a>
+      </nav>
+    </div>
+  </header>
+  <div id="status" class="status"></div>
+  <main id="view"><p class="muted">Loading...</p></main>
+
+  <!-- PDF export -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+
+  <!-- app -->
+  <script src="js/config.js"></script>
+  <script src="js/criteria.js"></script>
+  <script src="js/logo.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/pdf.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
