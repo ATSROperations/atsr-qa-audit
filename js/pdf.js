@@ -16,19 +16,23 @@ function buildAuditPdf(audit, jsPDFCtor, logoDataUrl) {
   const colorFor = (s) => s.criticalFail ? C.red : s.outcome === "Pass" ? C.teal : s.outcome === "Needs coaching" ? C.amber : C.red;
   const pctTxt = (x) => x === null || x === undefined ? "-" : Math.round(x * 100) + "%";
 
-  // header band
-  doc.setFillColor(...C.teal); doc.rect(0, 0, W, 26, "F");
-  if (logoDataUrl) { doc.setFillColor(255, 255, 255); doc.roundedRect(M, 5, 32, 16, 1.5, 1.5, "F"); doc.addImage(logoDataUrl, "PNG", M + 2, 6.5, 28, 10); }
-  doc.setTextColor(255, 255, 255); doc.setFont("helvetica", "bold"); doc.setFontSize(14);
-  doc.text("B2B QA Audit", W - M, 12, { align: "right" });
-  doc.setFont("helvetica", "normal"); doc.setFontSize(9);
-  doc.text(({ completed: "Completed file", ongoing: "Ongoing file", cancelled: "Cancelled file" }[audit.auditType] || "File") + "  |  checks v" + audit.criteriaVersion, W - M, 18, { align: "right" });
+  // watermark: pale mint tick, bottom right, drawn under the content of every page
+  const drawWatermark = () => { if (typeof ATSR_TICK_MINT !== "undefined") doc.addImage(ATSR_TICK_MINT, "PNG", W - M - 78, H - 78, 78, 57); };
+  drawWatermark();
+
+  // header: brand logo on white, title right, teal rule with a turquoise accent
+  if (logoDataUrl) doc.addImage(logoDataUrl, "PNG", M, 9, 45, 12);
+  doc.setTextColor(...C.teal); doc.setFont("helvetica", "bold"); doc.setFontSize(14);
+  doc.text("B2B QA Audit", W - M, 14, { align: "right" });
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(...C.grey);
+  doc.text(({ completed: "Completed file", ongoing: "Ongoing file", cancelled: "Cancelled file" }[audit.auditType] || "File") + "  |  checks v" + audit.criteriaVersion, W - M, 19.5, { align: "right" });
+  doc.setDrawColor(...C.teal); doc.setLineWidth(0.5); doc.line(M, 26, W - M, 26);
+  doc.setDrawColor(...C.turquoise); doc.setLineWidth(1.4); doc.line(M, 26, M + 28, 26);
 
   // title
   let y = 38;
   doc.setTextColor(...C.teal); doc.setFont("helvetica", "bold"); doc.setFontSize(17);
   doc.text(audit.fileRef || "Audit", M, y, { maxWidth: W - 2 * M });
-  doc.setDrawColor(...C.turquoise); doc.setLineWidth(1); doc.line(M, y + 3, M + 40, y + 3);
 
   // meta, two columns
   y += 12;
@@ -64,12 +68,13 @@ function buildAuditPdf(audit, jsPDFCtor, logoDataUrl) {
 
   // per person
   doc.autoTable({
-    startY: y, margin: { left: M, right: M },
+    startY: y, margin: { left: M, right: M }, theme: "grid",
     head: [["Person", "Part of the file", "Pass", "Fail", "N/A", "Score", "Outcome"]],
     body: s.byPerson.map(p => [p.name, p.slots.join(", "), p.passed, p.failed, p.na, pctTxt(p.score), p.outcome + (p.criticalFail ? " (critical)" : "")]),
     styles: { font: "helvetica", fontSize: 8.5, cellPadding: 2, textColor: C.charcoal, lineColor: [220, 224, 222], lineWidth: 0.2 },
     headStyles: { fillColor: C.teal, textColor: 255, fontStyle: "bold" },
     columnStyles: { 0: { cellWidth: 42, fontStyle: "bold" }, 2: { halign: "center" }, 3: { halign: "center" }, 4: { halign: "center" }, 5: { halign: "center", fontStyle: "bold" } },
+    willDrawPage: (d) => { if (d.pageNumber > 1) drawWatermark(); },
     didParseCell: (d) => { if (d.section === "body" && d.column.index === 6) d.cell.styles.textColor = colorFor(s.byPerson[d.row.index]); },
   });
   y = doc.lastAutoTable.finalY + 8;
@@ -86,11 +91,12 @@ function buildAuditPdf(audit, jsPDFCtor, logoDataUrl) {
     body.push([String(n), it.text, who, it.critical ? "Critical" : "Standard", r.result === "pass" ? "Pass" : r.result === "fail" ? "Fail" : r.result === "na" ? "N/A" : "-", r.note || ""]);
   });
   doc.autoTable({
-    startY: y, margin: { left: M, right: M },
+    startY: y, margin: { left: M, right: M }, theme: "grid",
     head: [["#", "Check", "Answerable", "Weight", "Result", "Notes / evidence"]],
     body,
     styles: { font: "helvetica", fontSize: 7.8, cellPadding: 1.8, textColor: C.charcoal, valign: "top", lineColor: [220, 224, 222], lineWidth: 0.2 },
     headStyles: { fillColor: C.teal, textColor: 255, fontStyle: "bold" },
+    willDrawPage: (d) => { if (d.pageNumber > 1) drawWatermark(); },
     columnStyles: { 0: { cellWidth: 7, halign: "center" }, 1: { cellWidth: 70 }, 2: { cellWidth: 26 }, 3: { cellWidth: 15, halign: "center" }, 4: { cellWidth: 13, halign: "center", fontStyle: "bold" }, 5: { cellWidth: "auto" } },
     didParseCell: (d) => {
       if (d.section !== "body" || d.cell.colSpan > 1) return;
@@ -101,7 +107,7 @@ function buildAuditPdf(audit, jsPDFCtor, logoDataUrl) {
   y = doc.lastAutoTable.finalY + 8;
 
   // coaching
-  if (y > H - 40) { doc.addPage(); y = 20; }
+  if (y > H - 40) { doc.addPage(); drawWatermark(); y = 20; }
   doc.setTextColor(...C.teal); doc.setFont("helvetica", "bold"); doc.setFontSize(11);
   doc.text("Coaching note / agreed action", M, y); y += 5;
   doc.setTextColor(...C.charcoal); doc.setFont("helvetica", "normal"); doc.setFontSize(9);

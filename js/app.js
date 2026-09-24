@@ -101,7 +101,7 @@
       <section class="hero">
         <div>
           <h1>Team</h1>
-          <p class="muted">Audits are of files: a completed file end to end, or a live file at its current stage. Each person's score is built from the checks they were answerable for.</p>
+          <p class="muted">Audits are of files: a completed file end to end, a live file at its current stage, or a cancelled file. Each person's score is built from the checks they were answerable for.</p>
         </div>
         <div class="hero-actions">
           <a class="btn primary" href="#/new">New audit</a>
