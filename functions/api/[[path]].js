@@ -173,10 +173,16 @@ export async function onRequest(context) {
     if (!email || !password) return fail(400, "Email and password are required.");
     let user = await db.prepare("SELECT * FROM users WHERE email = ?1").bind(email).first();
 
-    // first ever sign-in creates the owner account from OWNER_INITIAL_PASSWORD
+    // first ever sign-in creates the owner account from OWNER_INITIAL_PASSWORD.
+    // While no account exists yet, errors say exactly what is missing; that reveals nothing
+    // about any account because there are none.
     if (!user) {
       const count = (await db.prepare("SELECT COUNT(*) AS n FROM users").first()).n;
-      if (count === 0 && email === OWNER && env.OWNER_INITIAL_PASSWORD && password === env.OWNER_INITIAL_PASSWORD) {
+      if (count === 0) {
+        const initial = String(env.OWNER_INITIAL_PASSWORD || "").trim();
+        if (email !== OWNER) return fail(401, "No accounts exist yet. The first sign-in must use the owner email (" + OWNER + ").");
+        if (!initial) return fail(500, "First sign-in is not set up: this deployment does not have the OWNER_INITIAL_PASSWORD secret. Add it under Settings > Variables and Secrets (Production), then retry the latest deployment.");
+        if (password.trim() !== initial) return fail(401, "OWNER_INITIAL_PASSWORD is set, but the password you typed doesn't match it. Check capitals, or overwrite the secret with a simple value and retry the latest deployment.");
         user = { id: uid("U"), email, name: "Owner", level: "owner" };
         await db.prepare("INSERT INTO users (id, email, name, level, pass, must_change, created_at, created_by) VALUES (?1, ?2, ?3, 'owner', ?4, 1, ?5, 'setup')")
           .bind(user.id, email, user.name, await hashPassword(password, env), now()).run();
