@@ -5,26 +5,23 @@
 const CONFIG = {
   appName: "B2B QA Audit",
 
-  // Where audits and team members are stored.
-  // Leave WEBHOOK_URL empty to store in this browser only (localStorage) - fine for testing.
-  // Set it to an n8n webhook URL (or any endpoint that speaks the contract in README.md)
-  // and every auditor shares the same records.
-  WEBHOOK_URL: "",
-  WEBHOOK_KEY: "",          // sent as the x-qa-key header, optional
+  // The live site. On these hosts audits and team members are stored in Cloudflare (D1) and the
+  // server enforces who may delete audits and manage the team. Anywhere else (a local copy, the
+  // preview) the app runs in this-browser-only mode. Add a custom domain here if you set one up.
+  SHARED_HOSTS: ["atsr-qa-audit.pages.dev"],
 
-  // Roles a team member can hold. The role prefills the "who handled this file" slots.
-  roles: ["Intake Admin", "Drafting Admin", "Admin Lead", "BD Manager", "Other"],
-
-  // Team members created on first run when the store is empty. Manage in the app after that.
+  // Team members created the first time an admin opens an empty app. Manage in the app after that.
+  // Job roles themselves are managed in the app (Manage team > Manage roles).
   TEAM_SEED: [
-    { name: "Intake Admin 1", role: "Intake Admin" },
-    { name: "Drafting Admin 1", role: "Drafting Admin" },
-    { name: "Drafting Admin 2", role: "Drafting Admin" },
-    { name: "Admin Lead", role: "Admin Lead" },
-    { name: "BD Manager", role: "BD Manager" },
+    { name: "Intake Admin 1", roles: ["Intake Admin"] },
+    { name: "Drafting Admin 1", roles: ["Drafting Admin"] },
+    { name: "Compliant Colleges Admin 1", roles: ["Compliant Colleges Admin", "Drafting Admin"] },
+    { name: "Admin Lead", roles: ["Admin Lead"] },
+    { name: "BD Manager", roles: ["BD Manager"] },
   ],
 
-  // RTOs and qualifications come from js/master-data.js (built from the ATSR Master File).
+  // RTOs and qualifications: functions/api/master-data.js (built from the ATSR Master File).
+  // College process notes: functions/api/college-notes.js. Both are only sent to signed-in users.
   //
   // Which compliance levels follow the college-specific process, and which the generic
   // checklist. The auditor can still switch the track on an audit.
@@ -32,14 +29,6 @@ const CONFIG = {
     "Compliant": "compliant",
     "Less Compliant": "noncompliant",   // CONFIRM: generic checklist or college-specific?
     "Non Compliant": "noncompliant",
-  },
-
-  // College process notes, keyed by RTO code. Shown above the checklist on files that
-  // follow the college-specific process. One rule per line.
-  COLLEGE_NOTES: {
-    "41138": [
-      "Add AIBT process rules here, one per line (portal, forms, kit, per-qualification conditions).",
-    ],
   },
 
   // Follow-up cadence reminders, shown above the checklist. The manual's cadence is the
