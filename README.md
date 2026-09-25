@@ -9,11 +9,13 @@ No build step. Plain HTML, CSS and JavaScript. Host by uploading the folder.
 ```
 index.html          app shell
 css/app.css         styles (ATSR brand tokens)
-js/config.js        settings: storage endpoint, roles, team seed, compliance level to checklist track, college notes, cadence reminders
+js/config.js        settings: live hosts, team seed, compliance level to checklist track, cadence reminders
 js/criteria.js      THE CHECKS - the only file to edit when the manual changes
-js/master-data.js   RTOs and qualifications, built from the ATSR Master File
+functions/api/master-data.js   RTOs and qualifications, built from the ATSR Master File (only sent to signed-in users)
+functions/api/college-notes.js College process notes, keyed by RTO code (only sent to signed-in users)
 tools/              build_master_data.py rebuilds master-data.js from the Master File
-js/storage.js       storage adapter (browser-only or shared endpoint)
+js/storage.js       storage adapter (Cloudflare on the live site, this browser elsewhere)
+functions/api/      server API: sign-in, logins, roles, records in Cloudflare D1, permissions
 js/pdf.js           PDF export
 js/logo.js          logo and tick watermark as data URLs for the PDF
 js/app.js           screens, routing, scoring
@@ -33,30 +35,45 @@ Any change to a file is a re-upload of the folder (or connect a GitHub repo for 
 
 Vercel's free Hobby plan is for non-commercial personal use only and its password protection is a paid feature, so it is not the right home for this.
 
-## Storage
+## Sign-in, storage and permissions
 
-Two modes, chosen by one setting in `js/config.js`:
+On the live site (hosts listed in `SHARED_HOSTS` in `js/config.js`) the app has its own sign-in. Records, team members, roles and logins are stored in a Cloudflare D1 database through `functions/api/[[path]].js`, which enforces every rule below. The app hides buttons people can't use, but the server is what enforces it, so the rules hold even if someone edits the page in their browser.
 
-- `WEBHOOK_URL` empty: records live in the auditor's browser only (localStorage). Good for testing. Backup and import are under the Backup link on the home page.
-- `WEBHOOK_URL` set: every auditor reads and writes the same records through that endpoint. This is the production setting.
+Access levels:
 
-### Endpoint contract (n8n webhook, or anything else)
+- **Owner** (the email in `OWNER_EMAIL`, default operations@atsrpl.com.au): everything, including creating logins, resetting passwords, setting access levels and disabling accounts.
+- **Admin**: delete audits, add/rename/archive/delete team members, manage job roles.
+- **Auditor**: view everything, add audits, change their own password.
 
-A record is a JSON object with at least `id` and `type` (`member` or `audit`). The app never needs the server to understand the rest; store the whole record as JSON and return it as-is.
+Rules:
 
-| Call | Request | Response |
-|---|---|---|
-| List | `GET {WEBHOOK_URL}?action=list` | JSON array of all records (or `{ "records": [...] }`) |
-| Save (upsert by id) | `POST {WEBHOOK_URL}` body `{ "action": "save", "record": { ... } }` | any 2xx |
-| Delete | `POST {WEBHOOK_URL}` body `{ "action": "delete", "id": "QA-..." }` | any 2xx |
+- Only the people who audit need a login. Team members are separate: they are the people whose work gets audited and need no login.
+- The owner creates each login (name, email, level). The app shows a temporary password once; the person sets their own at first sign-in. Reset works the same way.
+- Passwords are hashed with a per-user salt and a secret pepper kept in Cloudflare. Five failed attempts lock the account for 15 minutes. Sessions last 7 days.
+- Saved audits cannot be changed by anyone. Deletes are soft: the row stays in D1 with who deleted it and when.
+- Every audit is stamped with the signed-in user's name and email.
+- A team member with audits can be archived, not deleted.
+- A person can hold several job roles. Roles are managed in the app (Manage team > Manage roles) and each says which part of a file it prefills.
 
-If `WEBHOOK_KEY` is set, it is sent as the `x-qa-key` header on every call. Reject requests without it.
+Anywhere else (a local copy, the preview) the app runs in this-browser-only mode with no sign-in.
 
-The webhook must allow CORS from the app's domain (in the n8n Webhook node: Options > Allowed Origins).
+### One-time setup
 
-Suggested table (Airtable or Google Sheets), one row per record: `id`, `type`, `file` (fileRef), `date`, `outcome` (summary.outcome), `score` (summary.score), `json` (the full record as text). Per-person results are inside `summary.byPerson` in the JSON. List = read all rows and return the parsed `json` column. Save = upsert on `id`. Delete = delete the row with that `id`. Three short n8n workflows, or one with a Switch on `action`.
+1. Cloudflare dashboard > Storage & Databases > D1 > Create database. Name it `atsr-qa-audit`.
+2. Workers & Pages > the `atsr-qa-audit` project > Settings > Bindings > Add > D1 database. Variable name `DB`, database `atsr-qa-audit`, environment Production. Save.
+3. Same project > Settings > Variables and Secrets > Add (environment Production), all as **Secret**:
+   - `OWNER_INITIAL_PASSWORD`: any password. It is used exactly once, the first time the owner email signs in; you are then asked to choose your real password.
+   - `AUTH_PEPPER`: a long random string (30+ characters). Set it once and never change it; changing it invalidates every password.
+   - Optional: `OWNER_EMAIL` (default operations@atsrpl.com.au), `AUTH_ITERATIONS` (default 50000; raise to 100000 or more on the Workers Paid plan).
+4. If Cloudflare Access is still switched on for this project, turn it off: Zero Trust > Access controls > Applications > delete the app, and in the Pages project Settings disable the Access policy. Otherwise people get two logins.
+5. Push the code (or retry the latest deployment) so the deployment picks up the binding and secrets. The tables are created automatically on first use.
+6. Open the site, sign in with the owner email and `OWNER_INITIAL_PASSWORD`, set your real password, then rename your account under Logins so your name prints on audits.
 
-Volume is small (a few hundred audits a year), so returning everything on list is fine.
+If the app shows "Storage is not set up", the binding is missing or the deployment predates it. If the first sign-in says "Wrong email or password", `OWNER_INITIAL_PASSWORD` is not set on the Production environment or the deployment predates it.
+
+To recover a deleted audit: D1 > the database > Console, `UPDATE records SET deleted_at = NULL, deleted_by = NULL WHERE id = 'QA-...';`
+
+Free tier limits (5 GB, millions of reads a day) are far above what this app uses.
 
 ## How an audit works
 
@@ -69,17 +86,17 @@ Volume is small (a few hundred audits a year), so returning everything on list i
 What changes with the file:
 
 - Stage: a check appears once the file has reached the stage where it can be judged (`from`). On Hold checks appear only while the file is On Hold (`only`). Cancelled files get every check up to the last stage reached, plus six cancellation checks from SOP 12.
-- Checklist track: set from the RTO's compliance level through `TRACK_BY_LEVEL` in config.js, and changeable on the audit. Generic checklist: bare minimum only (100-point ID, USI or passport, work evidence). College-specific process: the college's own checklist and rules, with the college's notes from `COLLEGE_NOTES` shown above the checks.
-- Owner: on the generic track the Drafting Admin reviews and the Admin Lead submits. On the college-specific track whoever took the file over reviews and submits, so the Review and submission slot starts unassigned. Cancellation checks default to the Admin Lead.
+- Checklist track: set from the RTO's compliance level through `TRACK_BY_LEVEL` in config.js, and changeable on the audit. Generic checklist: bare minimum only (100-point ID, USI or passport, work evidence). College-specific process: the college's own checklist and rules, with the college's notes shown above the checks.
+- Owner: each part of the file is prefilled with the first team member whose role maps to it. On compliant-college files the Review and submission part is prefilled from the Compliant Colleges Admin role; on generic files from the Drafting Admin role. The auditor can change any of it.
 
 ## Updating RTOs and qualifications
 
 Two ways:
 
-- Small change: edit the row in `js/master-data.js` on GitHub (one RTO or qualification per line) and commit.
-- Master File changed a lot: run `python3 tools/build_master_data.py "ATSR Master File.xlsx"` from the project folder (needs `pip install openpyxl`), then commit the new `js/master-data.js`.
+- Small change: edit the row in `functions/api/master-data.js` on GitHub (one RTO or qualification per line) and commit.
+- Master File changed a lot: run `python3 tools/build_master_data.py "ATSR Master File.xlsx"` from the project folder (needs `pip install openpyxl`), then commit the new `functions/api/master-data.js`.
 
-College notes live in `config.js` under `COLLEGE_NOTES`, keyed by RTO code, so rebuilding the data never wipes them.
+College notes live in `functions/api/college-notes.js`, keyed by RTO code, so rebuilding the data never wipes them.
 
 ## Maintaining the checks
 
