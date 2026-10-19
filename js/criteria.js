@@ -20,7 +20,7 @@
 */
 
 const CRITERIA = {
-  version: "2.1",
+  version: "2.2",
   manual: "B2B Operations Manual v2.0 (ATSR-OPS-B2B-MANUAL)",
   thresholds: { pass: 0.9, coaching: 0.75 },
 
@@ -131,7 +131,11 @@ const CRITERIA = {
     { id: "SU-04", phase: "submission", owner: "lead", from: 4, for: "all", critical: true, ref: "SOP 10",
       text: "RTO invoice requested and verified against the cost list before it went to the CEO for payment. RTO Invoice Received and RTO Paid updated the day they changed. Receipt emailed to the RTO." },
     { id: "SU-05", phase: "submission", owner: "review", from: 4, for: "all", critical: false, ref: "SOP 10 / SOP 14",
-      text: "RTO followed up for status after 5 business days in the RTO's thread. Evidence requests from the RTO handled through the agent, rejections noted on the opportunity." },
+      text: "RTO followed up for status in the RTO's thread at the cadence for this college type: every 5 business days for compliant RTOs, every 2 for less and non-compliant. Evidence requests from the RTO handled through the agent, rejections noted on the opportunity." },
+    { id: "SU-06", phase: "submission", owner: { noncompliant: "lead", compliant: "review" }, from: 4, for: "all", critical: false, ref: "SOP 10 / weekly invoicing",
+      text: "Submitted to the RTO within the allowed window after the portfolio was complete and paid (see the days in the file facts). Where it waited longer, a note on the opportunity says why (payment, forms, exception)." },
+    { id: "CP-01", phase: "submission", owner: { noncompliant: "lead", compliant: "review" }, from: 3, only: ["D"], for: "all", critical: false, ref: "SOP 10 / weekly invoicing",
+      text: "Portfolio has not been sitting at Complete Portfolio beyond the allowed window (see the days in the file facts), or the reason it has not gone to the RTO yet is noted on the opportunity (payment, forms, exception)." },
 
     // ---- Soft copy ----------------------------------------------------------
     { id: "SC-01", phase: "softcopy", owner: "review", from: 5, for: "all", critical: true, ref: "SOP 11",

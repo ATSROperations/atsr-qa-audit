@@ -8,6 +8,14 @@
   const pct = (x) => x === null || x === undefined ? "-" : Math.round(x * 100) + "%";
   const fmtDate = (iso) => { if (!iso) return "-"; const [y, m, d] = iso.split("-"); return d + "/" + m + "/" + y; };
   const daysBetween = (a, b) => (a && b) ? Math.round((new Date(b) - new Date(a)) / 86400000) : null;
+  // Mon to Fri between two dates, excluding the start day. Public holidays are not known to the app.
+  const businessDays = (a, b) => {
+    if (!a || !b) return null;
+    let d = new Date(a + "T00:00:00"), end = new Date(b + "T00:00:00"), n = 0;
+    if (end < d) return 0;
+    while (d < end) { d.setDate(d.getDate() + 1); const w = d.getDay(); if (w !== 0 && w !== 6) n++; }
+    return n;
+  };
 
   const stageByLetter = (l) => CRITERIA.stages.find(s => s.letter === l);
   const phaseById = (id) => CRITERIA.phases.find(p => p.id === id);
@@ -188,9 +196,10 @@
         <tbody>${list.map(a => { const p = a.summary.byPerson.find(x => x.memberId === id); return `<tr>
           <td>${fmtDate(a.date)}</td><td>${esc(a.fileRef || "-")}</td><td>${esc(auditLabel(a))}</td>
           <td>${esc(p.slots.join(", "))}</td><td>${pct(p.score)}</td><td>${badge(p)}</td><td>${badge(a.summary)}</td>
-          <td class="row-actions"><a href="#/audit/${esc(a.id)}">Open</a> <button class="link" data-pdf="${esc(a.id)}">PDF</button></td></tr>`; }).join("")}</tbody>
+          <td class="row-actions"><a href="#/audit/${esc(a.id)}">Open</a> <button class="link" data-ppdf="${esc(a.id)}">Their copy</button> <button class="link" data-pdf="${esc(a.id)}">File PDF</button></td></tr>`; }).join("")}</tbody>
       </table></div>` : `<p class="muted">No audits yet for ${esc(m.name)}.</p>`}`;
     view().querySelectorAll("[data-pdf]").forEach(b => b.addEventListener("click", () => downloadPdf(b.dataset.pdf)));
+    view().querySelectorAll("[data-ppdf]").forEach(b => b.addEventListener("click", () => downloadPersonPdf(b.dataset.ppdf, id)));
   }
 
   // ---- new audit ----------------------------------------------------------
@@ -199,10 +208,10 @@
     if (!team.length) { view().innerHTML = `<p class="empty">${can.admin ? `Add the team first. <a href="#/team">Manage team</a>` : "No team members yet. Ask an admin to add the team."}</p>`; return; }
 
     const draft = {
-      auditType: "completed", stage: "G", fileRef: "", qualification: "", qualOther: "", receivedDate: "", date: today(),
+      auditType: "completed", stage: "G", fileRef: "", qualification: "", qualOther: "", receivedDate: "", completeDate: "", sentDate: "", date: today(),
       auditor: cloud() ? Storage.me.name : (localStorage.getItem("atsr_qa_auditor") || ""),
       rtoCode: "", rtoOther: "", compliant: false,
-      people: {}, results: {}, coaching: "",
+      people: {}, results: {}, coaching: "", coachingByPerson: {},
     };
     const cancelled = () => draft.auditType === "cancelled";
     const rto = () => draft.rtoCode && draft.rtoCode !== "other" ? rtoByCode(draft.rtoCode) : null;
@@ -252,6 +261,8 @@
               <label>Auditor <input id="f-auditor" type="text" value="${esc(draft.auditor)}" placeholder="Your name" required ${cloud() ? "readonly" : ""}></label>
               <label>File received <input id="f-received" type="date" required></label>
               <label>Audit date <input id="f-date" type="date" value="${today()}" required></label>
+              <label id="complete-wrap">Portfolio complete on <input id="f-complete" type="date"></label>
+              <label id="sent-wrap">Sent to RTO on <input id="f-sent" type="date"></label>
               <label>Checklist track
                 <select id="f-comp"><option value="1">College-specific process</option><option value="0" selected>Generic checklist</option></select>
               </label>
@@ -265,12 +276,22 @@
           </div>
           <div id="reminders"></div>
           <div id="items"></div>
-          <label class="coaching">Coaching note / agreed action
-            <textarea id="f-coaching" rows="3" placeholder="What was discussed, with whom, what changes, by when."></textarea>
+          <label class="coaching">Coaching note / agreed action (whole file)
+            <textarea id="f-coaching" rows="3" placeholder="Goes on the file PDF only. Can mention anyone."></textarea>
           </label>
+          <div id="person-notes" class="person-notes"></div>
         </div>
         <aside class="result-panel" id="result-panel"></aside>
       </form>`;
+
+    // ---- per-person notes: one box per distinct assigned person; goes on that person's copy only
+    function fillPersonNotes() {
+      const seen = new Set(); const rows = [];
+      CRITERIA.slots.forEach(sl => { const id = draft.people[sl.id]; if (id && !seen.has(id) && $(`#people select[data-slot="${sl.id}"]`)) { seen.add(id); const m = memberById(id); if (m) rows.push(m); } });
+      $("#person-notes").innerHTML = rows.length ? `<div class="people-title">Agreed actions per person</div><p class="muted small">Each note goes on that person's own copy of the audit, with only their checks. Nothing from the file note or other people's notes appears there.</p>` +
+        rows.map(m => `<label>${esc(m.name)}<textarea data-pnote="${esc(m.id)}" rows="2" placeholder="What ${esc(m.name.split(" ")[0])} agreed to change, by when.">${esc(draft.coachingByPerson[m.id] || "")}</textarea></label>`).join("") : "";
+      $("#person-notes").querySelectorAll("textarea[data-pnote]").forEach(t => t.addEventListener("input", () => { draft.coachingByPerson[t.dataset.pnote] = t.value; }));
+    }
 
     // ---- header wiring
     function fillStages() {
@@ -285,7 +306,22 @@
       const slots = slotsInScope(items, compKey(draft.compliant));
       $("#people").innerHTML = `<div class="people-title">Who handled this file</div><div class="people-grid">` +
         slots.map(s => `<label>${esc(s.label)}<select data-slot="${s.id}"><option value="">Unassigned</option>${team.map(m => `<option value="${m.id}" ${draft.people[s.id] === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select></label>`).join("") + `</div>`;
-      $("#people").querySelectorAll("select[data-slot]").forEach(sel => sel.addEventListener("change", () => { draft.people[sel.dataset.slot] = sel.value; renderItems(); }));
+      $("#people").querySelectorAll("select[data-slot]").forEach(sel => sel.addEventListener("change", () => { draft.people[sel.dataset.slot] = sel.value; fillPersonNotes(); renderItems(); }));
+      fillPersonNotes();
+    }
+    // Wait between Complete Portfolio and submission. Reached submission: complete -> sent. Still at
+    // Complete Portfolio: complete -> audit date (still waiting).
+    function submitWait() {
+      const rank = (stageByLetter(draft.stage) || {}).rank || 0;
+      if (!draft.completeDate || rank < 3) return null;
+      if (draft.stage === "D") { const n = businessDays(draft.completeDate, draft.date); return n === null ? null : { days: n, over: n > CONFIG.SUBMIT_WITHIN_BUSINESS_DAYS, label: "at Complete Portfolio, not yet sent" }; }
+      if (rank >= 4 && draft.sentDate) { const n = businessDays(draft.completeDate, draft.sentDate); return n === null ? null : { days: n, over: n > CONFIG.SUBMIT_WITHIN_BUSINESS_DAYS, label: "from complete to sent to RTO" }; }
+      return null;
+    }
+    function fillDateVisibility() {
+      const rank = (stageByLetter(draft.stage) || {}).rank || 0;
+      $("#complete-wrap").hidden = rank < 3;
+      $("#sent-wrap").hidden = rank < 4;
     }
     function fillFacts() {
       const bits = [];
@@ -295,6 +331,8 @@
       if (q) bits.push(`<span><b>${esc(q.code)}</b> ${esc(q.title)}</span>`, `<span><b>Entry requirement</b> ${esc(q.entry || "-")}</span>`);
       const d = daysBetween(draft.receivedDate, draft.date);
       if (d !== null) bits.push(`<span><b>${d} days</b> from file received to audit</span>`);
+      const sw = submitWait();
+      if (sw) bits.push(`<span class="${sw.over ? "fact-warn" : ""}"><b>${sw.days} business day${sw.days === 1 ? "" : "s"}</b> ${sw.label} (allowed: ${CONFIG.SUBMIT_WITHIN_BUSINESS_DAYS})</span>`);
       $("#file-facts").innerHTML = bits.filter(Boolean).join("");
     }
     function fillReminders() {
@@ -310,9 +348,9 @@
     $("#audit-form").querySelectorAll("[data-type]").forEach(b => b.addEventListener("click", () => {
       draft.auditType = b.dataset.type;
       $("#audit-form").querySelectorAll("[data-type]").forEach(x => x.classList.toggle("on", x === b));
-      fillStages(); fillPeople(); renderItems();
+      fillStages(); fillDateVisibility(); fillFacts(); fillPeople(); renderItems();
     }));
-    $("#f-stage").addEventListener("change", e => { draft.stage = e.target.value; fillPeople(); renderItems(); });
+    $("#f-stage").addEventListener("change", e => { draft.stage = e.target.value; fillDateVisibility(); fillFacts(); fillPeople(); renderItems(); });
     $("#f-file").addEventListener("input", e => draft.fileRef = e.target.value);
     $("#f-qual").addEventListener("change", e => {
       draft.qualification = e.target.value === "other" ? draft.qualOther : e.target.value;
@@ -322,6 +360,8 @@
     $("#f-qual-other").addEventListener("input", e => { draft.qualOther = e.target.value; draft.qualification = e.target.value; });
     $("#f-received").addEventListener("change", e => { draft.receivedDate = e.target.value; fillFacts(); });
     $("#f-date").addEventListener("change", e => { draft.date = e.target.value; fillFacts(); });
+    $("#f-complete").addEventListener("change", e => { draft.completeDate = e.target.value; fillFacts(); });
+    $("#f-sent").addEventListener("change", e => { draft.sentDate = e.target.value; fillFacts(); });
     $("#f-auditor").addEventListener("input", e => draft.auditor = e.target.value);
     $("#f-rto").addEventListener("change", e => {
       draft.rtoCode = e.target.value;
@@ -403,7 +443,7 @@
         <p class="muted small">Checks v${esc(CRITERIA.version)}. ${items.length} in scope.</p>`;
     }
 
-    fillStages(); fillPeople(); fillFacts(); fillReminders(); renderItems();
+    fillStages(); fillDateVisibility(); fillPeople(); fillFacts(); fillReminders(); renderItems();
     $("#rto-other-wrap").hidden = true;
     $("#qual-other-wrap").hidden = true;
 
@@ -421,6 +461,8 @@
         fileRef: draft.fileRef.trim(),
         qualification: q ? q.code + " " + q.title : draft.qualification.trim(),
         receivedDate: draft.receivedDate, date: draft.date, daysInPipeline: daysBetween(draft.receivedDate, draft.date),
+        completeDate: draft.completeDate || "", sentDate: draft.sentDate || "",
+        submitWait: (() => { const w = submitWait(); return w ? { businessDays: w.days, over: w.over, label: w.label, allowed: CONFIG.SUBMIT_WITHIN_BUSINESS_DAYS } : null; })(),
         auditor,
         rto: rtoName(), rtoCode: r ? r.code : "", complianceLevel: r ? r.level : "", processTo: r ? r.processTo : "",
         compliant: draft.compliant,
@@ -428,6 +470,7 @@
         itemIds: items.map(it => it.id),
         results: Object.fromEntries(items.map(it => [it.id, { result: draft.results[it.id]?.result || null, note: (draft.results[it.id]?.note || "").trim(), owner: ownerOf(it, ck) }])),
         coaching: draft.coaching.trim(),
+        coachingByPerson: Object.fromEntries(Object.entries(draft.coachingByPerson).filter(([id, t]) => t && t.trim() && Object.values(draft.people).includes(id)).map(([id, t]) => [id, t.trim()])),
         summary: computeSummary(items, draft.results, draft.compliant, draft.people),
         criteriaVersion: CRITERIA.version, createdAt: new Date().toISOString(),
       };
@@ -462,23 +505,26 @@
       <nav class="crumbs"><a href="#/">Team</a> / ${esc(a.id)}</nav>
       <section class="hero">
         <div><h1>${esc(a.fileRef || "Audit")}</h1>
-          <p class="muted">${esc(auditLabel(a))}. ${esc(a.rto || "RTO not recorded")}${a.rtoCode ? " (" + esc(a.rtoCode) + ")" : ""}${a.complianceLevel ? ", " + esc(a.complianceLevel) : ""}, ${esc(compLabel(a.compliant).toLowerCase())}${a.qualification ? ". " + esc(a.qualification) : ""}. Received ${fmtDate(a.receivedDate)}, audited ${fmtDate(a.date)}${a.daysInPipeline !== null ? " (" + a.daysInPipeline + " days)" : ""} by ${esc(a.auditor || "-")}.</p></div>
-        <div class="hero-actions"><button class="btn primary" id="btn-pdf">Download PDF</button>${can.del ? `<button class="btn danger" id="btn-del">Delete</button>` : ""}</div>
+          <p class="muted">${esc(auditLabel(a))}. ${esc(a.rto || "RTO not recorded")}${a.rtoCode ? " (" + esc(a.rtoCode) + ")" : ""}${a.complianceLevel ? ", " + esc(a.complianceLevel) : ""}, ${esc(compLabel(a.compliant).toLowerCase())}${a.qualification ? ". " + esc(a.qualification) : ""}. Received ${fmtDate(a.receivedDate)}, audited ${fmtDate(a.date)}${a.daysInPipeline !== null ? " (" + a.daysInPipeline + " days)" : ""} by ${esc(a.auditor || "-")}.${a.submitWait ? ` <span class="${a.submitWait.over ? "warn" : ""}">${a.submitWait.businessDays} business days ${esc(a.submitWait.label)} (allowed ${a.submitWait.allowed}).</span>` : ""}</p></div>
+        <div class="hero-actions"><button class="btn primary" id="btn-pdf">File PDF</button>${can.del ? `<button class="btn danger" id="btn-del">Delete</button>` : ""}</div>
       </section>
       <div class="audit">
         <div class="audit-main">
           <div id="items" class="readonly">${html}</div>
-          <h3>Coaching note / agreed action</h3>
+          <h3>Coaching note / agreed action (whole file)</h3>
           <p class="coaching-ro">${a.coaching ? esc(a.coaching) : "<span class='muted'>None recorded.</span>"}</p>
+          ${Object.keys(a.coachingByPerson || {}).length ? `<h3>Agreed actions per person</h3>` + s.byPerson.filter(p => p.memberId && (a.coachingByPerson || {})[p.memberId]).map(p => `<p class="coaching-ro"><strong>${esc(p.name)}:</strong> ${esc(a.coachingByPerson[p.memberId])}</p>`).join("") : ""}
         </div>
         <aside class="result-panel">
           <div class="score ${outcomeClass(s)}"><div class="big">${pct(s.score)}</div><div class="word">${esc(s.outcome)}</div>${s.criticalFail ? `<div class="why">Critical check failed</div>` : ""}</div>
           <dl class="tally"><div><dt>Pass</dt><dd>${s.passed}</dd></div><div><dt>Fail</dt><dd>${s.failed}</dd></div><div><dt>N/A</dt><dd>${s.na}</dd></div></dl>
-          <div class="people-scores">${s.byPerson.map(p => `<div class="ps"><div>${p.memberId ? `<a href="#/member/${esc(p.memberId)}"><strong>${esc(p.name)}</strong></a>` : `<strong>${esc(p.name)}</strong>`}<span class="muted small">${esc(p.slots.join(", "))}</span></div><div class="ps-r ${outcomeClass(p)}">${pct(p.score)}</div></div>`).join("")}</div>
+          <div class="people-scores">${s.byPerson.map(p => `<div class="ps"><div>${p.memberId ? `<a href="#/member/${esc(p.memberId)}"><strong>${esc(p.name)}</strong></a>` : `<strong>${esc(p.name)}</strong>`}<span class="muted small">${esc(p.slots.join(", "))}</span>${p.memberId ? `<button class="link small" data-ppdf="${esc(p.memberId)}">Their copy (PDF)</button>` : ""}</div><div class="ps-r ${outcomeClass(p)}">${pct(p.score)}</div></div>`).join("")}</div>
+          <p class="muted small">Their copy shows only that person's checks and score, plus the file result.</p>
           <p class="muted small">Checks v${esc(a.criteriaVersion)}.${a.loggedBy ? ` Logged by ${esc(a.auditor || a.loggedBy)} (${esc(a.loggedBy)}).` : ""}</p>
         </aside>
       </div>`;
     $("#btn-pdf").addEventListener("click", () => downloadPdf(a.id));
+    view().querySelectorAll("[data-ppdf]").forEach(b => b.addEventListener("click", () => downloadPersonPdf(a.id, b.dataset.ppdf)));
     if ($("#btn-del")) $("#btn-del").addEventListener("click", async () => {
       if (!confirm("Delete this audit? This cannot be undone.")) return;
       try { await Storage.remove(a.id); records = records.filter(r => r.id !== a.id); setStatus("Audit deleted.", "ok"); location.hash = "#/"; }
@@ -726,6 +772,14 @@
     const a = audits().find(x => x.id === id); if (!a) return;
     if (!window.jspdf) { setStatus("PDF library not loaded. Check your connection.", "err"); return; }
     try { buildAuditPdf(a, window.jspdf.jsPDF, typeof ATSR_LOGO !== "undefined" ? ATSR_LOGO : null).save(auditPdfFilename(a)); }
+    catch (err) { console.error(err); setStatus("PDF failed: " + err.message, "err"); }
+  }
+
+  function downloadPersonPdf(auditId, memberId) {
+    const a = audits().find(x => x.id === auditId); if (!a) return;
+    if (!window.jspdf) { setStatus("PDF library not loaded. Check your connection.", "err"); return; }
+    const p = a.summary.byPerson.find(x => x.memberId === memberId);
+    try { buildPersonPdf(a, memberId, window.jspdf.jsPDF, typeof ATSR_LOGO !== "undefined" ? ATSR_LOGO : null).save(personPdfFilename(a, p ? p.name : memberId)); }
     catch (err) { console.error(err); setStatus("PDF failed: " + err.message, "err"); }
   }
 

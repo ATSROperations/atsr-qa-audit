@@ -31,22 +31,26 @@ const CONFIG = {
     "Non Compliant": "noncompliant",
   },
 
-  // Follow-up cadence reminders, shown above the checklist. The manual's cadence is the
-  // compliant one. Non-compliant is lighter in practice - set the actual cadence here.
+  // Follow-up cadence reminders, shown above the checklist. RTO follow-up differs by college type:
+  // compliant RTOs every 5 business days, less and non-compliant every 2 (Rikuo, Oct 2026).
   CADENCE: {
     compliant: [
       "Missing documents: every 1 to 2 business days (2.1.1). Escalate after 5 business days with no reply.",
       "Outstanding invoice: on the due date, then 2 days later (2.1.2). Escalate when more than a week overdue.",
       "Signed forms: every 2 business days (2.1.1, listing the forms). Escalate after 5 business days.",
-      "RTO not responding: after 5 business days (4.1), then again after a further 5.",
+      "RTO follow-up: every 5 business days (4.1).",
     ],
     noncompliant: [
       "Missing documents: lighter than compliant. Confirm the cadence and record it here.",
       "Outstanding invoice: on the due date, then 2 days later (2.1.2). Escalate when more than a week overdue.",
       "Signed forms: every 2 business days (2.1.1, listing the forms). Escalate after 5 business days.",
-      "RTO not responding: after 5 business days (4.1), then again after a further 5.",
+      "RTO follow-up: every 2 business days (4.1).",
     ],
   },
+
+  // How long a complete, paid portfolio may wait before it goes to the RTO. Agents are invoiced
+  // weekly, so a complete file should not sit longer than that. Business days (Mon to Fri).
+  SUBMIT_WITHIN_BUSINESS_DAYS: 5,   // CONFIRM
 
   // Suggested sampling, shown on the home page. Text only.
   cadence: [
