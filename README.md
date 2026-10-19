@@ -81,7 +81,9 @@ Free tier limits (5 GB, millions of reads a day) are far above what this app use
 2. Fill in the file: stage, file reference, qualification (type the code, the title and entry requirement appear), file received date, audit date, RTO. The RTO list comes from the Master File, grouped by compliance level, with archived RTOs at the bottom. Picking the RTO shows its compliance level, Process To and type, and sets the checklist track.
 3. Assign who handled each part of the file. Roles prefill this; change it if someone else did the work. Only the parts in scope are shown.
 4. Score each check Pass, Fail or N/A. A Fail needs a note. On cancelled files, use N/A for steps that never happened.
-5. Save, then Download PDF.
+5. Save. Then download the **File PDF** (everything, for the auditor and lead) or **Their copy** for each person (only their checks and score, the file result stated neutrally, and only their agreed actions). The whole-file coaching note never appears on a person's copy, so it can mention anyone; the per-person notes go on that person's copy only.
+
+Dates on the audit: file received, portfolio complete (from Complete Portfolio onward) and sent to RTO (from Portfolio Sent to College onward). From these the app shows the submission wait in business days against `SUBMIT_WITHIN_BUSINESS_DAYS` in config.js (agents are invoiced weekly, so a complete, paid file should not sit longer than that). Check CP-01 (file still at Complete Portfolio) and SU-06 (file already sent) score it.
 
 What changes with the file:
 
@@ -105,6 +107,7 @@ Everything is in `js/criteria.js`.
 - One list of checks, grouped by phase of the file journey. Each check has `from` (earliest stage), optional `only`, `for` (all, compliant, noncompliant), `owner` and `critical`.
 - Every check carries the SOP reference it came from. When a chapter of the manual changes, search the file for that reference and edit only those checks.
 - `critical: true` means one Fail fails the audit regardless of the percentage. Keep this for the checks that cost money, breach privacy or reach the agent.
+- RTO follow-up cadence: every 5 business days for compliant RTOs, every 2 for less and non-compliant (check SU-05 and the cadence box in config.js).
 - Never reuse an id. Saved audits store results by id.
 - Bump `version` whenever a check changes. Every saved audit records the version it was scored against, and the PDF prints it.
 - Thresholds (`pass: 0.9`, `coaching: 0.75`) are at the top of the same file.
