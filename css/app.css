@@ -307,3 +307,9 @@ body.auth main { max-width: 440px; padding-top: 48px; }
 .temp-box { background: var(--note-bg); border: 1px solid var(--note-line); border-radius: 8px; padding: 12px 16px; margin: 0 0 14px; }
 .temp-box code { display: block; font-size: 22px; letter-spacing: .08em; margin: 6px 0; font-family: ui-monospace, Consolas, monospace; user-select: all; }
 @media (max-width: 860px) { .member-form { grid-template-columns: 1fr; } }
+.facts .fact-warn, .facts .fact-warn b { color: var(--fail-fg); }
+.person-notes { margin-top: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+.person-notes:empty { display: none; }
+.person-notes label { margin-top: 8px; }
+.person-notes textarea { font-size: 13px; }
+.ps button.link.small { font-size: 12px; margin-top: 2px; text-align: left; }
