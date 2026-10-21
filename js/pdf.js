@@ -74,7 +74,7 @@ function pdfFindings(ctx, y, audit, itemIds, withOwner) {
     if (it.phase !== lastPhase) { const ph = CRITERIA.phases.find(p => p.id === it.phase); body.push([{ content: ph.title + "  (" + ph.sop + ")", colSpan: withOwner ? 6 : 5, styles: { fillColor: C.mint, fontStyle: "bold", textColor: C.teal } }]); lastPhase = it.phase; }
     n++;
     const row = [String(n), it.text];
-    if (withOwner) { const slot = CRITERIA.slots.find(x => x.id === r.owner); row.push((slot ? slot.label : "") + (audit.peopleNames && audit.peopleNames[r.owner] ? "\n" + audit.peopleNames[r.owner] : "")); }
+    if (withOwner) { const slot = CRITERIA.slots.find(x => x.id === r.owner); const who = r.memberName || (audit.peopleNames && audit.peopleNames[r.owner]) || ""; row.push((slot ? slot.label : "") + (who ? "\n" + who : "") + (audit.overrides && audit.overrides[id] ? "\n(reassigned)" : "")); }
     row.push(it.critical ? "Critical" : "Standard", pdfResult(r.result), r.note || "");
     body.push(row);
   });
@@ -154,7 +154,7 @@ function buildPersonPdf(audit, memberId, jsPDFCtor, logoDataUrl) {
   const p = (audit.summary.byPerson || []).find(x => x.memberId === memberId);
   if (!p) throw new Error("That person was not part of this audit.");
   const mySlots = Object.keys(audit.people || {}).filter(k => audit.people[k] === memberId);
-  const myIds = audit.itemIds.filter(id => mySlots.includes((audit.results[id] || {}).owner));
+  const myIds = audit.itemIds.filter(id => { const r = audit.results[id] || {}; return r.memberId ? r.memberId === memberId : mySlots.includes(r.owner); });
   const ctx = pdfStart(jsPDFCtor, logoDataUrl, "QA Audit Feedback", "Your part of the file  |  checks v" + audit.criteriaVersion);
   const { doc, M, C } = ctx;
   let y = 38;

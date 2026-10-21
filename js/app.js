@@ -64,28 +64,32 @@
     const score = (passed + failed) ? passed / (passed + failed) : null;
     return { passed, failed, na, unscored: items.length - passed - failed - na, score, criticalFail, outcome: band(score, criticalFail) };
   }
-  function computeSummary(items, results, compliant, people) {
+  // Who is answerable for a check: the per-check reassignment if there is one, else the person in the slot.
+  const resolveOwner = (item, ck, people, overrides) => (overrides && overrides[item.id]) || people[ownerOf(item, ck)] || null;
+  function computeSummary(items, results, compliant, people, overrides) {
     const ck = compKey(compliant);
     const overall = tally(items, results);
-    // group slots by the person holding them
     const byPerson = [];
-    CRITERIA.slots.forEach(slot => {
-      const its = items.filter(it => ownerOf(it, ck) === slot.id);
-      if (!its.length) return;
-      const memberId = people[slot.id] || null;
-      const key = memberId || "unassigned-" + slot.id;
+    items.forEach(it => {
+      const slotId = ownerOf(it, ck); const slot = slotById(slotId);
+      const memberId = resolveOwner(it, ck, people, overrides);
+      const key = memberId || "unassigned-" + slotId;
       let p = byPerson.find(x => x.key === key);
       if (!p) { const m = memberId ? memberById(memberId) : null; p = { key, memberId, name: m ? m.name : "Unassigned", slots: [], items: [] }; byPerson.push(p); }
-      p.slots.push(slot.label); p.items.push(...its);
+      const label = (overrides && overrides[it.id]) ? "Reassigned checks" : slot.label;
+      if (!p.slots.includes(label)) p.slots.push(label);
+      p.items.push(it);
     });
     byPerson.forEach(p => { Object.assign(p, tally(p.items, results)); delete p.items; });
     return { ...overall, byPerson };
   }
   const outcomeClass = (s) => s.criticalFail ? "fail" : s.outcome === "Pass" ? "pass" : s.outcome === "Needs coaching" ? "coach" : s.outcome === "Fail" ? "fail" : "none";
-  const badge = (s) => `<span class="badge ${outcomeClass(s)}">${esc(s.outcome)}${s.criticalFail ? " (critical)" : ""}</span>`;
+  const badge = (s, a) => a && a.status === "draft" ? `<span class="badge none">Draft</span>` : `<span class="badge ${outcomeClass(s)}">${esc(s.outcome)}${s.criticalFail ? " (critical)" : ""}</span>`;
+  const isDraft = (a) => a.status === "draft";
+  const canEdit = (a) => can.admin || (isDraft(a) && (!cloud() || a.loggedBy === Storage.me.email));
 
   function memberStats(memberId) {
-    const list = auditsFor(memberId).map(a => ({ audit: a, mine: a.summary.byPerson.find(p => p.memberId === memberId) }));
+    const list = auditsFor(memberId).filter(a => !isDraft(a)).map(a => ({ audit: a, mine: a.summary.byPerson.find(p => p.memberId === memberId) }));
     const scored = list.slice(0, 5).filter(x => x.mine.score !== null);
     const avg = scored.length ? scored.reduce((t, x) => t + x.mine.score, 0) / scored.length : null;
     return { count: list.length, last: list[0] || null, avg, criticals: list.filter(x => x.mine.criticalFail).length };
@@ -152,7 +156,7 @@
             <tbody>${recent.map(a => `<tr onclick="location.hash='#/audit/${esc(a.id)}'">
               <td>${fmtDate(a.date)}</td><td>${esc(a.fileRef || "-")}</td><td>${esc(auditLabel(a))}</td>
               <td>${esc(a.rtoCode ? a.rtoCode : (a.rto || "-"))} <span class="muted small">${esc(a.complianceLevel || compLabel(a.compliant))}</span></td>
-              <td>${pct(a.summary.score)}</td><td>${badge(a.summary)}</td></tr>`).join("")}</tbody>
+              <td>${isDraft(a) ? "-" : pct(a.summary.score)}</td><td>${badge(a.summary, a)}</td></tr>`).join("")}</tbody>
           </table></div>` : `<p class="muted">Nothing logged yet.</p>`}
         </div>
         <aside class="panel">
@@ -195,7 +199,7 @@
         <thead><tr><th>Audited</th><th>File</th><th>Type</th><th>Their part</th><th>Their score</th><th>Their outcome</th><th>File outcome</th><th></th></tr></thead>
         <tbody>${list.map(a => { const p = a.summary.byPerson.find(x => x.memberId === id); return `<tr>
           <td>${fmtDate(a.date)}</td><td>${esc(a.fileRef || "-")}</td><td>${esc(auditLabel(a))}</td>
-          <td>${esc(p.slots.join(", "))}</td><td>${pct(p.score)}</td><td>${badge(p)}</td><td>${badge(a.summary)}</td>
+          <td>${esc(p.slots.join(", "))}</td><td>${isDraft(a) ? "-" : pct(p.score)}</td><td>${badge(p, a)}</td><td>${badge(a.summary, a)}</td>
           <td class="row-actions"><a href="#/audit/${esc(a.id)}">Open</a> <button class="link" data-ppdf="${esc(a.id)}">Their copy</button> <button class="link" data-pdf="${esc(a.id)}">File PDF</button></td></tr>`; }).join("")}</tbody>
       </table></div>` : `<p class="muted">No audits yet for ${esc(m.name)}.</p>`}`;
     view().querySelectorAll("[data-pdf]").forEach(b => b.addEventListener("click", () => downloadPdf(b.dataset.pdf)));
@@ -203,16 +207,30 @@
   }
 
   // ---- new audit ----------------------------------------------------------
-  function renderNew() {
+  function renderNew(editId) {
     const team = members();
     if (!team.length) { view().innerHTML = `<p class="empty">${can.admin ? `Add the team first. <a href="#/team">Manage team</a>` : "No team members yet. Ask an admin to add the team."}</p>`; return; }
+    const existing = editId ? audits().find(x => x.id === editId) : null;
+    if (editId && !existing) { view().innerHTML = `<p class="empty">Audit not found. <a href="#/">Back</a></p>`; return; }
+    if (existing && !canEdit(existing)) { view().innerHTML = `<p class="empty">${isDraft(existing) ? "Only the person who started this draft, or an admin, can change it." : "Only an admin can change a saved audit."} <a href="#/audit/${esc(existing.id)}">Back</a></p>`; return; }
 
     const draft = {
       auditType: "completed", stage: "G", fileRef: "", qualification: "", qualOther: "", receivedDate: "", completeDate: "", sentDate: "", date: today(),
       auditor: cloud() ? Storage.me.name : (localStorage.getItem("atsr_qa_auditor") || ""),
       rtoCode: "", rtoOther: "", compliant: false,
-      people: {}, results: {}, coaching: "", coachingByPerson: {},
+      people: {}, results: {}, coaching: "", coachingByPerson: {}, overrides: {},
     };
+    if (existing) {
+      const e = existing;
+      Object.assign(draft, {
+        auditType: e.auditType, stage: e.stage, fileRef: e.fileRef || "", receivedDate: e.receivedDate || "", completeDate: e.completeDate || "", sentDate: e.sentDate || "", date: e.date || today(),
+        auditor: e.auditor || draft.auditor, rtoCode: e.rtoCode || (e.rto ? "other" : ""), rtoOther: e.rtoCode ? "" : (e.rto || ""), compliant: !!e.compliant,
+        people: { ...(e.people || {}) }, coaching: e.coaching || "", coachingByPerson: { ...(e.coachingByPerson || {}) }, overrides: { ...(e.overrides || {}) },
+        results: Object.fromEntries(Object.entries(e.results || {}).map(([k, v]) => [k, { result: v.result || null, note: v.note || "" }])),
+      });
+      const qcode = (e.qualification || "").split(" ")[0];
+      if (qualByCode(qcode)) draft.qualification = qcode; else { draft.qualification = e.qualification || ""; draft.qualOther = e.qualification || ""; }
+    }
     const cancelled = () => draft.auditType === "cancelled";
     const rto = () => draft.rtoCode && draft.rtoCode !== "other" ? rtoByCode(draft.rtoCode) : null;
     const rtoName = () => rto() ? rto().name : draft.rtoOther.trim();
@@ -229,6 +247,7 @@
       return p;
     }
     draft.people = defaultPeople();
+    const whoOptions = (sel) => team.map(m => `<option value="${m.id}" ${sel === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("");
 
     const levels = ["Compliant", "Less Compliant", "Non Compliant"];
     const active = ctx.master.rtos.filter(r => !r.archived);
@@ -245,8 +264,8 @@
       `<option value="other">Other (type it)</option>`;
 
     view().innerHTML = `
-      <nav class="crumbs"><a href="#/">Team</a> / New audit</nav>
-      <section class="hero"><div><h1>New audit</h1><p class="muted">Fill in the file first. The checks below adjust to the audit type, the stage and the college.</p></div></section>
+      <nav class="crumbs"><a href="#/">Team</a> / ${existing ? `<a href="#/audit/${esc(existing.id)}">${esc(existing.fileRef || existing.id)}</a> / Edit` : "New audit"}</nav>
+      <section class="hero"><div><h1>${existing ? (isDraft(existing) ? "Continue draft" : "Edit audit") : "New audit"}</h1><p class="muted">${existing && !isDraft(existing) ? "Changes are recorded with your name and the date. The original auditor stays on the record." : "Fill in the file first. The checks below adjust to the audit type, the stage and the college."}</p></div></section>
       <form id="audit-form" class="audit" autocomplete="off">
         <div class="audit-main">
           <div class="head-block">
@@ -284,10 +303,20 @@
         <aside class="result-panel" id="result-panel"></aside>
       </form>`;
 
+    if (existing) {
+      $("#audit-form").querySelectorAll("[data-type]").forEach(x => x.classList.toggle("on", x.dataset.type === draft.auditType));
+      $("#f-file").value = draft.fileRef; $("#f-received").value = draft.receivedDate; $("#f-date").value = draft.date;
+      $("#f-complete").value = draft.completeDate; $("#f-sent").value = draft.sentDate; $("#f-auditor").value = draft.auditor;
+      $("#f-rto").value = draft.rtoCode || ""; $("#f-rto-other").value = draft.rtoOther; $("#f-comp").value = draft.compliant ? "1" : "0";
+      if (qualByCode(draft.qualification)) $("#f-qual").value = draft.qualification; else if (draft.qualOther) { $("#f-qual").value = "other"; $("#f-qual-other").value = draft.qualOther; }
+      $("#f-coaching").value = draft.coaching;
+    }
+
     // ---- per-person notes: one box per distinct assigned person; goes on that person's copy only
     function fillPersonNotes() {
       const seen = new Set(); const rows = [];
       CRITERIA.slots.forEach(sl => { const id = draft.people[sl.id]; if (id && !seen.has(id) && $(`#people select[data-slot="${sl.id}"]`)) { seen.add(id); const m = memberById(id); if (m) rows.push(m); } });
+      scopeItems(draft.stage, draft.compliant, cancelled()).forEach(it => { const id = draft.overrides[it.id]; if (id && !seen.has(id)) { seen.add(id); const m = memberById(id); if (m) rows.push(m); } });
       $("#person-notes").innerHTML = rows.length ? `<div class="people-title">Agreed actions per person</div><p class="muted small">Each note goes on that person's own copy of the audit, with only their checks. Nothing from the file note or other people's notes appears there.</p>` +
         rows.map(m => `<label>${esc(m.name)}<textarea data-pnote="${esc(m.id)}" rows="2" placeholder="What ${esc(m.name.split(" ")[0])} agreed to change, by when.">${esc(draft.coachingByPerson[m.id] || "")}</textarea></label>`).join("") : "";
       $("#person-notes").querySelectorAll("textarea[data-pnote]").forEach(t => t.addEventListener("input", () => { draft.coachingByPerson[t.dataset.pnote] = t.value; }));
@@ -351,7 +380,7 @@
       fillStages(); fillDateVisibility(); fillFacts(); fillPeople(); renderItems();
     }));
     $("#f-stage").addEventListener("change", e => { draft.stage = e.target.value; fillDateVisibility(); fillFacts(); fillPeople(); renderItems(); });
-    $("#f-file").addEventListener("input", e => draft.fileRef = e.target.value);
+    $("#f-file").addEventListener("input", e => { draft.fileRef = e.target.value; refreshPanel(); });
     $("#f-qual").addEventListener("change", e => {
       draft.qualification = e.target.value === "other" ? draft.qualOther : e.target.value;
       $("#qual-other-wrap").hidden = e.target.value !== "other";
@@ -383,13 +412,13 @@
         if (it.phase !== lastPhase) { const ph = phaseById(it.phase); html += `<h3 class="phase">${esc(ph.title)} <span class="muted">${esc(ph.sop)}</span></h3>`; lastPhase = it.phase; }
         n++;
         const r = draft.results[it.id] || { result: null, note: "" };
-        const slot = slotById(ownerOf(it, ck)); const who = draft.people[slot.id] ? memberById(draft.people[slot.id]) : null;
+        const slot = slotById(ownerOf(it, ck)); const slotPerson = draft.people[slot.id] || ""; const ov = draft.overrides[it.id] || "";
         html += `
-          <div class="item ${r.result === "fail" ? "is-fail" : ""}" data-id="${it.id}">
+          <div class="item ${r.result === "fail" ? "is-fail" : ""} ${ov ? "is-reassigned" : ""}" data-id="${it.id}">
             <div class="item-n">${n}</div>
             <div class="item-body">
               <p>${esc(it.text)}</p>
-              <div class="item-meta"><span class="who">${esc(slot.label)}${who ? ": " + esc(who.name) : ""}</span><span class="ref">${esc(it.ref)}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</div>
+              <div class="item-meta"><span class="who">${esc(slot.label)}:</span><select class="who-sel" data-who="${it.id}" title="Who did this on this file"><option value="">${esc(slotPerson ? (memberById(slotPerson) || {}).name || "Unassigned" : "Unassigned")} (from part)</option>${whoOptions(ov)}</select>${ov ? `<span class="reassigned">reassigned</span>` : ""}<span class="ref">${esc(it.ref)}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</div>
               <textarea class="note" placeholder="Notes / evidence (required for a Fail)" rows="1">${esc(r.note)}</textarea>
             </div>
             <div class="seg" role="group" aria-label="Result for check ${n}">
@@ -409,6 +438,8 @@
           row.classList.toggle("is-fail", cur.result === "fail");
           refreshPanel();
         }));
+        const who = row.querySelector(".who-sel");
+        who.addEventListener("change", () => { if (who.value) draft.overrides[id] = who.value; else delete draft.overrides[id]; fillPersonNotes(); renderItems(); });
         const note = row.querySelector(".note");
         const grow = () => { note.style.height = "auto"; note.style.height = note.scrollHeight + "px"; };
         note.addEventListener("input", () => { (draft.results[id] || (draft.results[id] = { result: null, note: "" })).note = note.value; grow(); refreshPanel(); });
@@ -420,7 +451,7 @@
     const panel = $("#result-panel");
     function refreshPanel() {
       const items = scopeItems(draft.stage, draft.compliant, cancelled());
-      const s = computeSummary(items, draft.results, draft.compliant, draft.people);
+      const s = computeSummary(items, draft.results, draft.compliant, draft.people, draft.overrides);
       const missingNotes = items.some(it => draft.results[it.id]?.result === "fail" && !(draft.results[it.id].note || "").trim());
       const unassigned = s.byPerson.some(p => !p.memberId);
       const noRto = !rto() && !draft.rtoOther.trim();
@@ -438,25 +469,29 @@
         ${missingNotes ? `<p class="warn small">Every Fail needs a note.</p>` : ""}
         ${unassigned ? `<p class="warn small">Assign a person to every part in scope.</p>` : ""}
         ${noRto ? `<p class="warn small">Select the RTO.</p>` : ""}
-        <button type="submit" class="btn primary block" ${s.unscored || missingNotes || unassigned || noRto || !items.length ? "disabled" : ""}>Save audit</button>
-        <a class="btn ghost block" href="#/">Cancel</a>
+        <button type="submit" class="btn primary block" ${s.unscored || missingNotes || unassigned || noRto || !items.length ? "disabled" : ""}>${existing && !isDraft(existing) ? "Save changes" : "Save final"}</button>
+        <button type="button" class="btn ghost block" id="btn-draft" ${!draft.fileRef.trim() ? "disabled" : ""}>${existing && !isDraft(existing) ? "Save as draft (unpublishes)" : "Save as draft"}</button>
+        <a class="btn ghost block" href="${existing ? "#/audit/" + esc(existing.id) : "#/"}">Cancel</a>
+        <p class="muted small">A draft keeps everything without counting in anyone's score. Finish it later from the audit page.</p>
         <p class="muted small">Checks v${esc(CRITERIA.version)}. ${items.length} in scope.</p>`;
+      $("#btn-draft").addEventListener("click", () => saveAudit("draft"));
     }
 
     fillStages(); fillDateVisibility(); fillPeople(); fillFacts(); fillReminders(); renderItems();
     $("#rto-other-wrap").hidden = true;
     $("#qual-other-wrap").hidden = true;
 
-    $("#audit-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
+    $("#audit-form").addEventListener("submit", (e) => { e.preventDefault(); saveAudit("final"); });
+    async function saveAudit(status) {
       const items = scopeItems(draft.stage, draft.compliant, cancelled());
       const auditor = draft.auditor.trim();
       localStorage.setItem("atsr_qa_auditor", auditor);
       const ck = compKey(draft.compliant);
       const peopleNames = {}; Object.keys(draft.people).forEach(k => { const m = memberById(draft.people[k]); if (m) peopleNames[k] = m.name; });
       const r = rto(); const q = qualByCode(draft.qualification);
+      const ownerName = (it) => { const id = resolveOwner(it, ck, draft.people, draft.overrides); const m = id ? memberById(id) : null; return { memberId: id || "", memberName: m ? m.name : "" }; };
       const audit = {
-        id: uid("QA"), type: "audit",
+        id: existing ? existing.id : uid("QA"), type: "audit", status,
         auditType: draft.auditType, stage: draft.stage, stageName: stageByLetter(draft.stage).name,
         fileRef: draft.fileRef.trim(),
         qualification: q ? q.code + " " + q.title : draft.qualification.trim(),
@@ -468,15 +503,18 @@
         compliant: draft.compliant,
         people: Object.fromEntries(slotsInScope(items, ck).map(s => [s.id, draft.people[s.id] || ""])), peopleNames,
         itemIds: items.map(it => it.id),
-        results: Object.fromEntries(items.map(it => [it.id, { result: draft.results[it.id]?.result || null, note: (draft.results[it.id]?.note || "").trim(), owner: ownerOf(it, ck) }])),
+        results: Object.fromEntries(items.map(it => [it.id, { result: draft.results[it.id]?.result || null, note: (draft.results[it.id]?.note || "").trim(), owner: ownerOf(it, ck), ...ownerName(it) }])),
+        overrides: Object.fromEntries(Object.entries(draft.overrides).filter(([id]) => items.some(it => it.id === id))),
         coaching: draft.coaching.trim(),
-        coachingByPerson: Object.fromEntries(Object.entries(draft.coachingByPerson).filter(([id, t]) => t && t.trim() && Object.values(draft.people).includes(id)).map(([id, t]) => [id, t.trim()])),
-        summary: computeSummary(items, draft.results, draft.compliant, draft.people),
-        criteriaVersion: CRITERIA.version, createdAt: new Date().toISOString(),
+        coachingByPerson: Object.fromEntries(Object.entries(draft.coachingByPerson).filter(([id, t]) => t && t.trim() && (Object.values(draft.people).includes(id) || Object.values(draft.overrides).includes(id))).map(([id, t]) => [id, t.trim()])),
+        summary: computeSummary(items, draft.results, draft.compliant, draft.people, draft.overrides),
+        criteriaVersion: CRITERIA.version, createdAt: existing ? existing.createdAt : new Date().toISOString(),
+        loggedBy: existing ? existing.loggedBy : undefined, loggedAt: existing ? existing.loggedAt : undefined, editLog: existing ? existing.editLog : undefined,
       };
-      try { const saved = await Storage.save(audit); records.push(saved && saved.id ? saved : audit); setStatus("Audit saved.", "ok"); location.hash = "#/audit/" + audit.id; }
+      if (!cloud() && existing) audit.editLog = [...(existing.editLog || []), { by: "local", name: Storage.me.name, at: new Date().toISOString(), status }];
+      try { const saved = await Storage.save(audit); const rec = saved && saved.id ? saved : audit; records = records.filter(r => r.id !== rec.id).concat(rec); setStatus(status === "draft" ? "Draft saved." : "Audit saved.", "ok"); location.hash = "#/audit/" + audit.id; }
       catch (err) { setStatus("Could not save: " + err.message, "err"); }
-    });
+    }
   }
 
   // ---- audit view ---------------------------------------------------------
@@ -489,13 +527,13 @@
       const it = itemById(iid); if (!it) return;
       if (it.phase !== lastPhase) { const ph = phaseById(it.phase); html += `<h3 class="phase">${esc(ph.title)} <span class="muted">${esc(ph.sop)}</span></h3>`; lastPhase = it.phase; }
       n++;
-      const r = a.results[iid] || {}; const slot = slotById(r.owner);
+      const r = a.results[iid] || {}; const slot = slotById(r.owner); const whoName = r.memberName || a.peopleNames[r.owner] || "";
       html += `
         <div class="item ${r.result === "fail" ? "is-fail" : ""}">
           <div class="item-n">${n}</div>
           <div class="item-body">
             <p>${esc(it.text)}</p>
-            <div class="item-meta"><span class="who">${esc(slot?.label || "")}${a.peopleNames[r.owner] ? ": " + esc(a.peopleNames[r.owner]) : ""}</span><span class="ref">${esc(it.ref)}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</div>
+            <div class="item-meta"><span class="who">${esc(slot?.label || "")}${whoName ? ": " + esc(whoName) : ""}</span>${a.overrides && a.overrides[iid] ? `<span class="reassigned">reassigned</span>` : ""}<span class="ref">${esc(it.ref)}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</div>
             ${r.note ? `<p class="note-ro">${esc(r.note)}</p>` : ""}
           </div>
           <div class="seg"><span class="pill ${esc(r.result || "none")}">${r.result === "pass" ? "Pass" : r.result === "fail" ? "Fail" : r.result === "na" ? "N/A" : "-"}</span></div>
@@ -504,9 +542,9 @@
     view().innerHTML = `
       <nav class="crumbs"><a href="#/">Team</a> / ${esc(a.id)}</nav>
       <section class="hero">
-        <div><h1>${esc(a.fileRef || "Audit")}</h1>
+        <div><h1>${esc(a.fileRef || "Audit")}${isDraft(a) ? ` <span class="badge none">Draft</span>` : ""}</h1>
           <p class="muted">${esc(auditLabel(a))}. ${esc(a.rto || "RTO not recorded")}${a.rtoCode ? " (" + esc(a.rtoCode) + ")" : ""}${a.complianceLevel ? ", " + esc(a.complianceLevel) : ""}, ${esc(compLabel(a.compliant).toLowerCase())}${a.qualification ? ". " + esc(a.qualification) : ""}. Received ${fmtDate(a.receivedDate)}, audited ${fmtDate(a.date)}${a.daysInPipeline !== null ? " (" + a.daysInPipeline + " days)" : ""} by ${esc(a.auditor || "-")}.${a.submitWait ? ` <span class="${a.submitWait.over ? "warn" : ""}">${a.submitWait.businessDays} business days ${esc(a.submitWait.label)} (allowed ${a.submitWait.allowed}).</span>` : ""}</p></div>
-        <div class="hero-actions"><button class="btn primary" id="btn-pdf">File PDF</button>${can.del ? `<button class="btn danger" id="btn-del">Delete</button>` : ""}</div>
+        <div class="hero-actions">${canEdit(a) ? `<a class="btn ${isDraft(a) ? "primary" : "ghost"}" href="#/edit/${esc(a.id)}">${isDraft(a) ? "Continue draft" : "Edit"}</a>` : ""}${isDraft(a) ? "" : `<button class="btn primary" id="btn-pdf">File PDF</button>`}${can.del ? `<button class="btn danger" id="btn-del">Delete</button>` : ""}</div>
       </section>
       <div class="audit">
         <div class="audit-main">
@@ -518,12 +556,13 @@
         <aside class="result-panel">
           <div class="score ${outcomeClass(s)}"><div class="big">${pct(s.score)}</div><div class="word">${esc(s.outcome)}</div>${s.criticalFail ? `<div class="why">Critical check failed</div>` : ""}</div>
           <dl class="tally"><div><dt>Pass</dt><dd>${s.passed}</dd></div><div><dt>Fail</dt><dd>${s.failed}</dd></div><div><dt>N/A</dt><dd>${s.na}</dd></div></dl>
-          <div class="people-scores">${s.byPerson.map(p => `<div class="ps"><div>${p.memberId ? `<a href="#/member/${esc(p.memberId)}"><strong>${esc(p.name)}</strong></a>` : `<strong>${esc(p.name)}</strong>`}<span class="muted small">${esc(p.slots.join(", "))}</span>${p.memberId ? `<button class="link small" data-ppdf="${esc(p.memberId)}">Their copy (PDF)</button>` : ""}</div><div class="ps-r ${outcomeClass(p)}">${pct(p.score)}</div></div>`).join("")}</div>
+          <div class="people-scores">${s.byPerson.map(p => `<div class="ps"><div>${p.memberId ? `<a href="#/member/${esc(p.memberId)}"><strong>${esc(p.name)}</strong></a>` : `<strong>${esc(p.name)}</strong>`}<span class="muted small">${esc(p.slots.join(", "))}</span>${p.memberId ? `${isDraft(a) ? "" : `<button class="link small" data-ppdf="${esc(p.memberId)}">Their copy (PDF)</button>`}` : ""}</div><div class="ps-r ${outcomeClass(p)}">${pct(p.score)}</div></div>`).join("")}</div>
           <p class="muted small">Their copy shows only that person's checks and score, plus the file result.</p>
           <p class="muted small">Checks v${esc(a.criteriaVersion)}.${a.loggedBy ? ` Logged by ${esc(a.auditor || a.loggedBy)} (${esc(a.loggedBy)}).` : ""}</p>
+          ${(a.editLog || []).length ? `<p class="muted small">Edits: ${a.editLog.map(e => esc(e.name || e.by) + " on " + fmtDate(String(e.at).slice(0, 10)) + (e.status === "draft" ? " (draft)" : "")).join("; ")}.</p>` : ""}
         </aside>
       </div>`;
-    $("#btn-pdf").addEventListener("click", () => downloadPdf(a.id));
+    if ($("#btn-pdf")) $("#btn-pdf").addEventListener("click", () => downloadPdf(a.id));
     view().querySelectorAll("[data-ppdf]").forEach(b => b.addEventListener("click", () => downloadPersonPdf(a.id, b.dataset.ppdf)));
     if ($("#btn-del")) $("#btn-del").addEventListener("click", async () => {
       if (!confirm("Delete this audit? This cannot be undone.")) return;
@@ -792,6 +831,7 @@
     window.scrollTo(0, 0);
     if (page === "member" && arg) return renderMember(arg);
     if (page === "new") return renderNew();
+    if (page === "edit" && arg) return renderNew(arg);
     if (page === "audit" && arg) return renderAudit(arg);
     if (page === "team") return renderTeam();
     if (page === "roles") return renderRoles();
