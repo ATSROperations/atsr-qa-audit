@@ -84,9 +84,66 @@
     return { ...overall, byPerson };
   }
   const outcomeClass = (s) => s.criticalFail ? "fail" : s.outcome === "Pass" ? "pass" : s.outcome === "Needs coaching" ? "coach" : s.outcome === "Fail" ? "fail" : "none";
-  const badge = (s, a) => a && a.status === "draft" ? `<span class="badge none">Draft</span>` : `<span class="badge ${outcomeClass(s)}">${esc(s.outcome)}${s.criticalFail ? " (critical)" : ""}</span>`;
-  const isDraft = (a) => a.status === "draft";
-  const canEdit = (a) => can.admin || (isDraft(a) && (!cloud() || a.loggedBy === Storage.me.email));
+  const badge = (s, a) => a && statusOf(a) === "draft" ? `<span class="badge none">In progress</span>` : `<span class="badge ${outcomeClass(s)}">${esc(s.outcome)}${s.criticalFail ? " (critical)" : ""}</span>`;
+
+  // ---- audit life cycle ----------------------------------------------------
+  // draft  = in progress: scoring not finished; the person who started it (or an admin) can change anything.
+  // scored = scored and sent for coaching: scores and file details are locked; coaching fields stay open.
+  // final  = coaching logged and closed. Coaching fields can still be corrected (logged).
+  // Changing locked fields: admin/owner edits with a reason; an auditor sends a change request that an admin approves.
+  // The server (functions/api/[[path]].js) enforces all of this; the same rules are mirrored here for local mode.
+  const statusOf = (a) => a.status === "draft" ? "draft" : a.status === "scored" ? "scored" : "final";
+  const STATUS_LABEL = { draft: "In progress", scored: "Awaiting coaching", final: "Final" };
+  const statusChip = (a) => `<span class="chip st-${statusOf(a)}">${STATUS_LABEL[statusOf(a)]}</span>`;
+  const isDraft = (a) => statusOf(a) === "draft";
+  const isMine = (a) => !cloud() || a.loggedBy === Storage.me.email;
+  const canEditDraft = (a) => isDraft(a) && (can.admin || isMine(a));
+  const auditLog = (a) => Array.isArray(a.changeLog) ? a.changeLog : (Array.isArray(a.editLog) ? a.editLog.map(e => ({ kind: e.status === "draft" ? "draft" : "changed", by: e.by, name: e.name, at: e.at, status: e.status })) : []);
+  // per-person coaching: { notes, commitment }; older audits stored a plain string (treated as the commitment)
+  const coachOf = (a, memberId) => { const v = (a.coachingByPerson || {})[memberId]; return typeof v === "string" ? { notes: "", commitment: v } : { notes: (v && v.notes) || "", commitment: (v && v.commitment) || "" }; };
+  const LOCKED_FIELDS = ["auditType", "stage", "stageName", "fileRef", "qualification", "receivedDate", "date", "completeDate", "sentDate", "rto", "rtoCode", "complianceLevel", "processTo", "compliant", "people", "overrides", "itemIds", "results"];
+  const COACH_FIELDS = ["coaching", "coachingByPerson", "coachingDate"];
+  const FIELD_LABELS = { auditType: "Audit type", stage: "Stage", fileRef: "File", qualification: "Qualification", receivedDate: "File received", date: "Audit date", completeDate: "Portfolio complete", sentDate: "Sent to RTO", rto: "RTO", compliant: "Checklist track" };
+  const RESULT_WORD = { pass: "Pass", fail: "Fail", na: "N/A" };
+  function auditDiff(prev, next) {
+    const out = [];
+    const str = (v) => v === null || v === undefined ? "" : (typeof v === "boolean" ? (v ? "College-specific" : "Generic") : String(v));
+    Object.keys(FIELD_LABELS).forEach(k => { const a = str(prev[k]), b = str(next[k]); if (a !== b) out.push(FIELD_LABELS[k] + ": " + (a || "-") + " -> " + (b || "-")); });
+    const pn = prev.peopleNames || {}, nn = next.peopleNames || {};
+    new Set([...Object.keys(prev.people || {}), ...Object.keys(next.people || {})]).forEach(sl => {
+      const a = (prev.people || {})[sl] || "", b = (next.people || {})[sl] || "";
+      if (a !== b) out.push((slotById(sl) || { label: sl }).label + ": " + (pn[sl] || "unassigned") + " -> " + (nn[sl] || "unassigned"));
+    });
+    const pi = prev.itemIds || [], ni = next.itemIds || [];
+    if (pi.join() !== ni.join()) out.push("Checks in scope: " + pi.length + " -> " + ni.length);
+    new Set([...pi, ...ni]).forEach(id => {
+      const a = (prev.results || {})[id] || {}, b = (next.results || {})[id] || {};
+      if ((a.result || "") !== (b.result || "")) out.push(id + ": " + (RESULT_WORD[a.result] || "unscored") + " -> " + (RESULT_WORD[b.result] || "unscored"));
+      if ((a.note || "") !== (b.note || "")) out.push(id + ": note changed");
+      if ((a.memberId || "") !== (b.memberId || "")) out.push(id + ": answerable " + (a.memberName || "from part") + " -> " + (b.memberName || "from part"));
+    });
+    return out;
+  }
+  // Local mode only: the same bookkeeping the server does (the local user is the owner, so nothing needs approval).
+  function localApply(prev, rec, reason) {
+    const at = new Date().toISOString(), who = { by: "local", name: Storage.me.name };
+    if (!prev) { rec.status = rec.status === "draft" ? "draft" : "scored"; rec.changeLog = [{ kind: "created", ...who, at, status: rec.status }]; return rec; }
+    const log = [...auditLog(prev)];
+    rec.loggedBy = prev.loggedBy; rec.loggedAt = prev.loggedAt; rec.auditor = prev.auditor || rec.auditor; rec.createdAt = prev.createdAt;
+    if (statusOf(prev) === "draft") { rec.status = rec.status === "draft" ? "draft" : "scored"; log.push({ kind: rec.status === "scored" ? "scored" : "draft", ...who, at, status: rec.status }); }
+    else {
+      const changes = auditDiff(prev, rec);
+      if (changes.length) log.push({ kind: "changed", ...who, at, reason: reason || "", changes });
+      rec.status = rec.status === "final" ? "final" : "scored";
+      if (JSON.stringify(COACH_FIELDS.map(k => prev[k])) !== JSON.stringify(COACH_FIELDS.map(k => rec[k])) || rec.status !== statusOf(prev)) log.push({ kind: "coaching", ...who, at, status: rec.status });
+    }
+    rec.changeLog = log.slice(-100); delete rec.editLog; return rec;
+  }
+  async function persistAudit(prev, rec, reason) {
+    if (cloud()) return Storage.save(rec, reason);
+    return Storage.save(localApply(prev, rec, reason));
+  }
+  const pendingAudits = () => audits().filter(a => a.pending);
 
   function memberStats(memberId) {
     const list = auditsFor(memberId).filter(a => !isDraft(a)).map(a => ({ audit: a, mine: a.summary.byPerson.find(p => p.memberId === memberId) }));
@@ -148,6 +205,7 @@
         }).join("") : `<p class="empty">No team members yet. ${can.admin ? `<a href="#/team">Add the team</a> to start.` : "Ask an admin to add the team."}</p>`}
       </section>
 
+      ${can.admin && pendingAudits().length ? `<section class="pending-list"><h3>Change requests waiting for approval</h3>${pendingAudits().map(a => `<p><a href="#/audit/${esc(a.id)}"><strong>${esc(a.fileRef || a.id)}</strong></a>: ${esc(a.pending.name || a.pending.by)} on ${fmtDate(String(a.pending.at).slice(0, 10))}. ${esc(a.pending.reason)} <span class="muted small">(${a.pending.changes.length} change${a.pending.changes.length === 1 ? "" : "s"})</span></p>`).join("")}</section>` : ""}
       <section class="two-col">
         <div>
           <h3>Recent audits</h3>
@@ -156,7 +214,7 @@
             <tbody>${recent.map(a => `<tr onclick="location.hash='#/audit/${esc(a.id)}'">
               <td>${fmtDate(a.date)}</td><td>${esc(a.fileRef || "-")}</td><td>${esc(auditLabel(a))}</td>
               <td>${esc(a.rtoCode ? a.rtoCode : (a.rto || "-"))} <span class="muted small">${esc(a.complianceLevel || compLabel(a.compliant))}</span></td>
-              <td>${isDraft(a) ? "-" : pct(a.summary.score)}</td><td>${badge(a.summary, a)}</td></tr>`).join("")}</tbody>
+              <td>${isDraft(a) ? "-" : pct(a.summary.score)}</td><td>${badge(a.summary, a)}${statusOf(a) === "scored" ? " " + statusChip(a) : ""}${a.pending ? ` <span class="chip st-pending">Change requested</span>` : ""}</td></tr>`).join("")}</tbody>
           </table></div>` : `<p class="muted">Nothing logged yet.</p>`}
         </div>
         <aside class="panel">
@@ -168,6 +226,13 @@
             <li>${Math.round(CRITERIA.thresholds.pass * 100)}% and above: Pass.</li>
             <li>${Math.round(CRITERIA.thresholds.coaching * 100)}% to ${Math.round(CRITERIA.thresholds.pass * 100) - 1}%: Needs coaching.</li>
             <li>Below ${Math.round(CRITERIA.thresholds.coaching * 100)}%, or any Critical check failed: Fail.</li>
+          </ul>
+          <h3>How an audit moves</h3>
+          <ul class="plain">
+            <li><strong>In progress</strong>: being scored. Only the person who started it, or an admin, can change it.</li>
+            <li><strong>Awaiting coaching</strong>: scored and sent to the person. Scores and file details are locked; coaching notes stay open.</li>
+            <li><strong>Final</strong>: coaching logged and commitments recorded.</li>
+            <li>Changing a locked score or detail: an admin edits it with a reason; an auditor sends a change request for an admin to approve. Everything is logged on the audit.</li>
           </ul>
           <p class="muted small">${cloud()
             ? `Signed in as ${esc(Storage.me.name)} (${esc(Storage.me.level)}). ${can.admin ? "You can delete audits and manage the team." : "You can view and add audits."}${can.owner ? ' <a href="#/data">Backup</a>' : ""}`
@@ -212,20 +277,23 @@
     if (!team.length) { view().innerHTML = `<p class="empty">${can.admin ? `Add the team first. <a href="#/team">Manage team</a>` : "No team members yet. Ask an admin to add the team."}</p>`; return; }
     const existing = editId ? audits().find(x => x.id === editId) : null;
     if (editId && !existing) { view().innerHTML = `<p class="empty">Audit not found. <a href="#/">Back</a></p>`; return; }
-    if (existing && !canEdit(existing)) { view().innerHTML = `<p class="empty">${isDraft(existing) ? "Only the person who started this draft, or an admin, can change it." : "Only an admin can change a saved audit."} <a href="#/audit/${esc(existing.id)}">Back</a></p>`; return; }
+    const locked = !!existing && !isDraft(existing);
+    const requesting = locked && !can.admin;   // an auditor on a locked audit can only propose changes
+    if (existing && isDraft(existing) && !canEditDraft(existing)) { view().innerHTML = `<p class="empty">Only the person who started this audit, or an admin, can change it while it is in progress. <a href="#/audit/${esc(existing.id)}">Back</a></p>`; return; }
+    if (requesting && existing.pending && existing.pending.by !== Storage.me.email) { view().innerHTML = `<p class="empty">A change request by ${esc(existing.pending.name || existing.pending.by)} is already waiting on this audit. It has to be approved or rejected before another one can be sent. <a href="#/audit/${esc(existing.id)}">Back</a></p>`; return; }
 
     const draft = {
       auditType: "completed", stage: "G", fileRef: "", qualification: "", qualOther: "", receivedDate: "", completeDate: "", sentDate: "", date: today(),
       auditor: cloud() ? Storage.me.name : (localStorage.getItem("atsr_qa_auditor") || ""),
       rtoCode: "", rtoOther: "", compliant: false,
-      people: {}, results: {}, coaching: "", coachingByPerson: {}, overrides: {},
+      people: {}, results: {}, coaching: "", coachingByPerson: {}, coachingDate: "", overrides: {}, reason: "",
     };
     if (existing) {
       const e = existing;
       Object.assign(draft, {
         auditType: e.auditType, stage: e.stage, fileRef: e.fileRef || "", receivedDate: e.receivedDate || "", completeDate: e.completeDate || "", sentDate: e.sentDate || "", date: e.date || today(),
         auditor: e.auditor || draft.auditor, rtoCode: e.rtoCode || (e.rto ? "other" : ""), rtoOther: e.rtoCode ? "" : (e.rto || ""), compliant: !!e.compliant,
-        people: { ...(e.people || {}) }, coaching: e.coaching || "", coachingByPerson: { ...(e.coachingByPerson || {}) }, overrides: { ...(e.overrides || {}) },
+        people: { ...(e.people || {}) }, coaching: e.coaching || "", coachingByPerson: { ...(e.coachingByPerson || {}) }, coachingDate: e.coachingDate || "", overrides: { ...(e.overrides || {}) },
         results: Object.fromEntries(Object.entries(e.results || {}).map(([k, v]) => [k, { result: v.result || null, note: v.note || "" }])),
       });
       const qcode = (e.qualification || "").split(" ")[0];
@@ -265,7 +333,7 @@
 
     view().innerHTML = `
       <nav class="crumbs"><a href="#/">Team</a> / ${existing ? `<a href="#/audit/${esc(existing.id)}">${esc(existing.fileRef || existing.id)}</a> / Edit` : "New audit"}</nav>
-      <section class="hero"><div><h1>${existing ? (isDraft(existing) ? "Continue draft" : "Edit audit") : "New audit"}</h1><p class="muted">${existing && !isDraft(existing) ? "Changes are recorded with your name and the date. The original auditor stays on the record." : "Fill in the file first. The checks below adjust to the audit type, the stage and the college."}</p></div></section>
+      <section class="hero"><div><h1>${existing ? (isDraft(existing) ? "Continue audit" : requesting ? "Request a change" : "Edit audit") : "New audit"}</h1><p class="muted">${requesting ? "Scores and file details are locked once an audit is scored. Make the changes, give the reason, and an admin or the owner will approve or reject them. Coaching notes are logged from the audit page." : locked ? "Your changes apply straight away and are logged with your name, the date and the reason. The original auditor stays on the record. Coaching notes are logged from the audit page." : "Fill in the file first. The checks below adjust to the audit type, the stage and the college."}</p></div></section>
       <form id="audit-form" class="audit" autocomplete="off">
         <div class="audit-main">
           <div class="head-block">
@@ -295,10 +363,10 @@
           </div>
           <div id="reminders"></div>
           <div id="items"></div>
-          <label class="coaching">Coaching note / agreed action (whole file)
-            <textarea id="f-coaching" rows="3" placeholder="Goes on the file PDF only. Can mention anyone."></textarea>
+          <label class="coaching" ${locked ? "hidden" : ""}>Coaching note (whole file)
+            <textarea id="f-coaching" rows="3" placeholder="Optional at this point. Goes on the file PDF only; can mention anyone. Usually filled in after coaching, from the audit page."></textarea>
           </label>
-          <div id="person-notes" class="person-notes"></div>
+          <div id="person-notes" class="person-notes" ${locked ? "hidden" : ""}></div>
         </div>
         <aside class="result-panel" id="result-panel"></aside>
       </form>`;
@@ -317,9 +385,9 @@
       const seen = new Set(); const rows = [];
       CRITERIA.slots.forEach(sl => { const id = draft.people[sl.id]; if (id && !seen.has(id) && $(`#people select[data-slot="${sl.id}"]`)) { seen.add(id); const m = memberById(id); if (m) rows.push(m); } });
       scopeItems(draft.stage, draft.compliant, cancelled()).forEach(it => { const id = draft.overrides[it.id]; if (id && !seen.has(id)) { seen.add(id); const m = memberById(id); if (m) rows.push(m); } });
-      $("#person-notes").innerHTML = rows.length ? `<div class="people-title">Agreed actions per person</div><p class="muted small">Each note goes on that person's own copy of the audit, with only their checks. Nothing from the file note or other people's notes appears there.</p>` +
-        rows.map(m => `<label>${esc(m.name)}<textarea data-pnote="${esc(m.id)}" rows="2" placeholder="What ${esc(m.name.split(" ")[0])} agreed to change, by when.">${esc(draft.coachingByPerson[m.id] || "")}</textarea></label>`).join("") : "";
-      $("#person-notes").querySelectorAll("textarea[data-pnote]").forEach(t => t.addEventListener("input", () => { draft.coachingByPerson[t.dataset.pnote] = t.value; }));
+      $("#person-notes").innerHTML = rows.length ? `<div class="people-title">Coaching per person</div><p class="muted small">Optional now; normally logged after coaching from the audit page. Each person's notes and commitment go on their own copy only.</p>` +
+        rows.map(m => { const c = coachOf(draft, m.id); return `<div class="pn"><strong>${esc(m.name)}</strong><label>Coaching notes<textarea data-pnote="${esc(m.id)}" data-k="notes" rows="2" placeholder="What was discussed with ${esc(m.name.split(" ")[0])}.">${esc(c.notes)}</textarea></label><label>Commitment<textarea data-pnote="${esc(m.id)}" data-k="commitment" rows="2" placeholder="What ${esc(m.name.split(" ")[0])} agreed to change, by when.">${esc(c.commitment)}</textarea></label></div>`; }).join("") : "";
+      $("#person-notes").querySelectorAll("textarea[data-pnote]").forEach(t => t.addEventListener("input", () => { const c = coachOf(draft, t.dataset.pnote); c[t.dataset.k] = t.value; draft.coachingByPerson[t.dataset.pnote] = c; }));
     }
 
     // ---- header wiring
@@ -469,27 +537,37 @@
         ${missingNotes ? `<p class="warn small">Every Fail needs a note.</p>` : ""}
         ${unassigned ? `<p class="warn small">Assign a person to every part in scope.</p>` : ""}
         ${noRto ? `<p class="warn small">Select the RTO.</p>` : ""}
-        <button type="submit" class="btn primary block" ${s.unscored || missingNotes || unassigned || noRto || !items.length ? "disabled" : ""}>${existing && !isDraft(existing) ? "Save changes" : "Save final"}</button>
-        <button type="button" class="btn ghost block" id="btn-draft" ${!draft.fileRef.trim() ? "disabled" : ""}>${existing && !isDraft(existing) ? "Save as draft (unpublishes)" : "Save as draft"}</button>
-        <a class="btn ghost block" href="${existing ? "#/audit/" + esc(existing.id) : "#/"}">Cancel</a>
-        <p class="muted small">A draft keeps everything without counting in anyone's score. Finish it later from the audit page.</p>
+        ${locked ? `
+          <div class="changes" id="change-preview"></div>
+          <label class="reason">Reason for the change <textarea id="f-reason" rows="3" placeholder="${requesting ? "Why the score or detail should change, e.g. what the person showed during coaching." : "Why this is being changed. Printed in the audit history."}">${esc(draft.reason)}</textarea></label>
+          <button type="submit" class="btn primary block" ${s.unscored || missingNotes || unassigned || noRto || !items.length ? "disabled" : ""}>${requesting ? "Send for approval" : "Save changes"}</button>
+          <a class="btn ghost block" href="#/audit/${esc(existing.id)}">Cancel</a>
+          <p class="muted small">${requesting ? "An admin or the owner approves or rejects the request. Nothing changes until then." : "Logged with your name, the date and the reason."}</p>` : `
+          <button type="submit" class="btn primary block" ${s.unscored || missingNotes || unassigned || noRto || !items.length ? "disabled" : ""}>Save scores</button>
+          <button type="button" class="btn ghost block" id="btn-draft" ${!draft.fileRef.trim() ? "disabled" : ""}>Save, still in progress</button>
+          <a class="btn ghost block" href="${existing ? "#/audit/" + esc(existing.id) : "#/"}">Cancel</a>
+          <p class="muted small">Save scores locks the scores and file details and starts the coaching step. In progress keeps everything open and counts in nobody's score.</p>`}
         <p class="muted small">Checks v${esc(CRITERIA.version)}. ${items.length} in scope.</p>`;
-      $("#btn-draft").addEventListener("click", () => saveAudit("draft"));
+      if ($("#btn-draft")) $("#btn-draft").addEventListener("click", () => saveAudit("draft"));
+      if (locked) {
+        $("#f-reason").addEventListener("input", e => draft.reason = e.target.value);
+        const ch = auditDiff(existing, buildAudit(statusOf(existing)));
+        $("#change-preview").innerHTML = ch.length ? `<strong>Changes (${ch.length})</strong><ul>${ch.map(c => `<li>${esc(c)}</li>`).join("")}</ul>` : `<span class="muted small">No changes yet.</span>`;
+      }
     }
 
     fillStages(); fillDateVisibility(); fillPeople(); fillFacts(); fillReminders(); renderItems();
     $("#rto-other-wrap").hidden = true;
     $("#qual-other-wrap").hidden = true;
 
-    $("#audit-form").addEventListener("submit", (e) => { e.preventDefault(); saveAudit("final"); });
-    async function saveAudit(status) {
+    $("#audit-form").addEventListener("submit", (e) => { e.preventDefault(); saveAudit(locked ? statusOf(existing) : "scored"); });
+    function buildAudit(status) {
       const items = scopeItems(draft.stage, draft.compliant, cancelled());
-      const auditor = draft.auditor.trim();
-      localStorage.setItem("atsr_qa_auditor", auditor);
       const ck = compKey(draft.compliant);
       const peopleNames = {}; Object.keys(draft.people).forEach(k => { const m = memberById(draft.people[k]); if (m) peopleNames[k] = m.name; });
       const r = rto(); const q = qualByCode(draft.qualification);
       const ownerName = (it) => { const id = resolveOwner(it, ck, draft.people, draft.overrides); const m = id ? memberById(id) : null; return { memberId: id || "", memberName: m ? m.name : "" }; };
+      const involved = new Set([...Object.values(draft.people), ...Object.values(draft.overrides)]);
       const audit = {
         id: existing ? existing.id : uid("QA"), type: "audit", status,
         auditType: draft.auditType, stage: draft.stage, stageName: stageByLetter(draft.stage).name,
@@ -498,30 +576,58 @@
         receivedDate: draft.receivedDate, date: draft.date, daysInPipeline: daysBetween(draft.receivedDate, draft.date),
         completeDate: draft.completeDate || "", sentDate: draft.sentDate || "",
         submitWait: (() => { const w = submitWait(); return w ? { businessDays: w.days, over: w.over, label: w.label, allowed: CONFIG.SUBMIT_WITHIN_BUSINESS_DAYS } : null; })(),
-        auditor,
+        auditor: draft.auditor.trim(),
         rto: rtoName(), rtoCode: r ? r.code : "", complianceLevel: r ? r.level : "", processTo: r ? r.processTo : "",
         compliant: draft.compliant,
         people: Object.fromEntries(slotsInScope(items, ck).map(s => [s.id, draft.people[s.id] || ""])), peopleNames,
         itemIds: items.map(it => it.id),
         results: Object.fromEntries(items.map(it => [it.id, { result: draft.results[it.id]?.result || null, note: (draft.results[it.id]?.note || "").trim(), owner: ownerOf(it, ck), ...ownerName(it) }])),
         overrides: Object.fromEntries(Object.entries(draft.overrides).filter(([id]) => items.some(it => it.id === id))),
-        coaching: draft.coaching.trim(),
-        coachingByPerson: Object.fromEntries(Object.entries(draft.coachingByPerson).filter(([id, t]) => t && t.trim() && (Object.values(draft.people).includes(id) || Object.values(draft.overrides).includes(id))).map(([id, t]) => [id, t.trim()])),
+        coaching: draft.coaching.trim(), coachingDate: draft.coachingDate || "",
+        coachingByPerson: Object.fromEntries(Object.keys(draft.coachingByPerson).filter(id => involved.has(id)).map(id => [id, { notes: coachOf(draft, id).notes.trim(), commitment: coachOf(draft, id).commitment.trim() }]).filter(([, c]) => c.notes || c.commitment)),
         summary: computeSummary(items, draft.results, draft.compliant, draft.people, draft.overrides),
         criteriaVersion: CRITERIA.version, createdAt: existing ? existing.createdAt : new Date().toISOString(),
-        loggedBy: existing ? existing.loggedBy : undefined, loggedAt: existing ? existing.loggedAt : undefined, editLog: existing ? existing.editLog : undefined,
       };
-      if (!cloud() && existing) audit.editLog = [...(existing.editLog || []), { by: "local", name: Storage.me.name, at: new Date().toISOString(), status }];
-      try { const saved = await Storage.save(audit); const rec = saved && saved.id ? saved : audit; records = records.filter(r => r.id !== rec.id).concat(rec); setStatus(status === "draft" ? "Draft saved." : "Audit saved.", "ok"); location.hash = "#/audit/" + audit.id; }
-      catch (err) { setStatus("Could not save: " + err.message, "err"); }
+      if (existing) { ["loggedBy", "loggedAt", "changeLog", "pending"].forEach(k => { if (existing[k] !== undefined) audit[k] = existing[k]; }); if (locked) { audit.coaching = existing.coaching || ""; audit.coachingByPerson = existing.coachingByPerson || {}; audit.coachingDate = existing.coachingDate || ""; audit.auditor = existing.auditor || audit.auditor; } }
+      return audit;
+    }
+    async function saveAudit(status) {
+      localStorage.setItem("atsr_qa_auditor", draft.auditor.trim());
+      const audit = buildAudit(status);
+      try {
+        let rec;
+        if (locked) {
+          const changes = auditDiff(existing, audit);
+          if (!changes.length) { setStatus("Nothing has changed.", "err"); return; }
+          if (!draft.reason.trim()) { setStatus("Give the reason for the change.", "err"); $("#f-reason").focus(); return; }
+          rec = requesting ? await Storage.requestChange(existing.id, audit, draft.reason.trim()) : await persistAudit(existing, audit, draft.reason.trim());
+        } else rec = await persistAudit(existing, audit);
+        rec = rec && rec.id ? rec : audit;
+        records = records.filter(r => r.id !== rec.id).concat(rec);
+        setStatus(requesting ? "Change request sent for approval." : status === "draft" ? "Saved, still in progress." : locked ? "Changes saved." : "Scores saved. Download the PDF and book the coaching.", "ok");
+        location.hash = "#/audit/" + audit.id;
+      } catch (err) { setStatus("Could not save: " + err.message, "err"); }
     }
   }
 
   // ---- audit view ---------------------------------------------------------
+  const LOG_WORD = { created: "Created", draft: "Saved, in progress", scored: "Scored", coaching: "Coaching log updated", changed: "Changed", requested: "Change requested", approved: "Change approved", rejected: "Change rejected" };
+  function logLine(e) {
+    const when = fmtDate(String(e.at).slice(0, 10));
+    const tidy = (t) => String(t).trim().replace(/[.\s]+$/, "");
+    let t = `<strong>${esc(LOG_WORD[e.kind] || e.kind)}</strong> by ${esc(e.decidedName || e.decidedBy || e.name || e.by)} on ${when}`;
+    if (e.kind === "coaching" && e.status) t += ` (${esc(STATUS_LABEL[e.status] || e.status).toLowerCase()})`;
+    if (e.kind === "approved" || e.kind === "rejected") t += ` (requested by ${esc(e.name || e.by)})`;
+    if (e.reason) t += `. Reason: ${esc(tidy(e.reason))}`;
+    if (e.note) t += `. Note: ${esc(tidy(e.note))}`;
+    t += ".";
+    if (e.changes && e.changes.length) t += `<ul class="small">${e.changes.map(c => `<li>${esc(c)}</li>`).join("")}</ul>`;
+    return `<li>${t}</li>`;
+  }
   function renderAudit(id) {
     const a = audits().find(x => x.id === id);
     if (!a) { view().innerHTML = `<p class="empty">Audit not found. <a href="#/">Back</a></p>`; return; }
-    const s = a.summary;
+    const s = a.summary, st = statusOf(a);
     let html = "", lastPhase = null, n = 0;
     a.itemIds.forEach(iid => {
       const it = itemById(iid); if (!it) return;
@@ -539,35 +645,93 @@
           <div class="seg"><span class="pill ${esc(r.result || "none")}">${r.result === "pass" ? "Pass" : r.result === "fail" ? "Fail" : r.result === "na" ? "N/A" : "-"}</span></div>
         </div>`;
     });
+    const people = s.byPerson.filter(p => p.memberId);
+    const coached = people.filter(p => { const c = coachOf(a, p.memberId); return c.notes || c.commitment; });
+    const pend = a.pending;
+    const actions = [];
+    if (st === "draft") { if (canEditDraft(a)) actions.push(`<a class="btn primary" href="#/edit/${esc(a.id)}">Continue</a>`); }
+    else {
+      actions.push(`<a class="btn ${st === "scored" ? "primary" : "ghost"}" href="#/coach/${esc(a.id)}">${st === "scored" ? "Log coaching" : "Update coaching log"}</a>`);
+      if (can.admin) actions.push(`<a class="btn ghost" href="#/edit/${esc(a.id)}">Edit</a>`);
+      else if (!(pend && pend.by !== Storage.me.email)) actions.push(`<a class="btn ghost" href="#/edit/${esc(a.id)}">${pend ? "Revise my request" : "Request a change"}</a>`);
+    }
+    actions.push(`<button class="btn ${st === "draft" ? "ghost" : "primary"}" id="btn-pdf">File PDF</button>`);
+    if (can.del) actions.push(`<button class="btn danger" id="btn-del">Delete</button>`);
     view().innerHTML = `
       <nav class="crumbs"><a href="#/">Team</a> / ${esc(a.id)}</nav>
       <section class="hero">
-        <div><h1>${esc(a.fileRef || "Audit")}${isDraft(a) ? ` <span class="badge none">Draft</span>` : ""}</h1>
+        <div><h1>${esc(a.fileRef || "Audit")} ${statusChip(a)}</h1>
           <p class="muted">${esc(auditLabel(a))}. ${esc(a.rto || "RTO not recorded")}${a.rtoCode ? " (" + esc(a.rtoCode) + ")" : ""}${a.complianceLevel ? ", " + esc(a.complianceLevel) : ""}, ${esc(compLabel(a.compliant).toLowerCase())}${a.qualification ? ". " + esc(a.qualification) : ""}. Received ${fmtDate(a.receivedDate)}, audited ${fmtDate(a.date)}${a.daysInPipeline !== null ? " (" + a.daysInPipeline + " days)" : ""} by ${esc(a.auditor || "-")}.${a.submitWait ? ` <span class="${a.submitWait.over ? "warn" : ""}">${a.submitWait.businessDays} business days ${esc(a.submitWait.label)} (allowed ${a.submitWait.allowed}).</span>` : ""}</p></div>
-        <div class="hero-actions">${canEdit(a) ? `<a class="btn ${isDraft(a) ? "primary" : "ghost"}" href="#/edit/${esc(a.id)}">${isDraft(a) ? "Continue draft" : "Edit"}</a>` : ""}${isDraft(a) ? "" : `<button class="btn primary" id="btn-pdf">File PDF</button>`}${can.del ? `<button class="btn danger" id="btn-del">Delete</button>` : ""}</div>
+        <div class="hero-actions">${actions.join("")}</div>
       </section>
+      ${pend ? `<section class="pending ${can.admin ? "" : "ro"}">
+        <h3>Change request waiting${can.admin ? " for your decision" : ""}</h3>
+        <p>${esc(pend.name || pend.by)} on ${fmtDate(String(pend.at).slice(0, 10))}. <strong>Reason:</strong> ${esc(pend.reason)}</p>
+        <ul class="small">${pend.changes.map(c => `<li>${esc(c)}</li>`).join("")}</ul>
+        ${can.admin ? `<label>Note to the requester (optional) <input id="f-decide-note" type="text" placeholder="e.g. Agreed, the receipt was in the file."></label>
+        <div class="row-actions"><button class="btn primary" id="btn-approve">Approve and apply</button> <button class="btn ghost" id="btn-reject">Reject</button></div>` : `<p class="muted small">Waiting for an admin or the owner. The scores below are unchanged until it is approved.</p>`}
+      </section>` : ""}
       <div class="audit">
         <div class="audit-main">
           <div id="items" class="readonly">${html}</div>
-          <h3>Coaching note / agreed action (whole file)</h3>
-          <p class="coaching-ro">${a.coaching ? esc(a.coaching) : "<span class='muted'>None recorded.</span>"}</p>
-          ${Object.keys(a.coachingByPerson || {}).length ? `<h3>Agreed actions per person</h3>` + s.byPerson.filter(p => p.memberId && (a.coachingByPerson || {})[p.memberId]).map(p => `<p class="coaching-ro"><strong>${esc(p.name)}:</strong> ${esc(a.coachingByPerson[p.memberId])}</p>`).join("") : ""}
+          <h3>Coaching${a.coachingDate ? ` <span class="muted">${fmtDate(a.coachingDate)}</span>` : ""}</h3>
+          ${st === "draft" ? `<p class="muted small">Coaching is logged once the audit is scored.</p>` : ""}
+          <p class="coaching-ro">${a.coaching ? esc(a.coaching) : "<span class='muted'>No whole-file note.</span>"}</p>
+          ${coached.length ? coached.map(p => { const c = coachOf(a, p.memberId); return `<div class="coach-ro"><strong>${esc(p.name)}</strong>${c.notes ? `<p><span class="muted small">Notes</span><br>${esc(c.notes)}</p>` : ""}${c.commitment ? `<p><span class="muted small">Commitment</span><br>${esc(c.commitment)}</p>` : ""}</div>`; }).join("") : (st !== "draft" ? `<p class="muted small">No per-person coaching logged yet.</p>` : "")}
+          ${auditLog(a).length ? `<h3>History</h3><ul class="history">${auditLog(a).slice().reverse().map(logLine).join("")}</ul>` : ""}
         </div>
         <aside class="result-panel">
           <div class="score ${outcomeClass(s)}"><div class="big">${pct(s.score)}</div><div class="word">${esc(s.outcome)}</div>${s.criticalFail ? `<div class="why">Critical check failed</div>` : ""}</div>
-          <dl class="tally"><div><dt>Pass</dt><dd>${s.passed}</dd></div><div><dt>Fail</dt><dd>${s.failed}</dd></div><div><dt>N/A</dt><dd>${s.na}</dd></div></dl>
-          <div class="people-scores">${s.byPerson.map(p => `<div class="ps"><div>${p.memberId ? `<a href="#/member/${esc(p.memberId)}"><strong>${esc(p.name)}</strong></a>` : `<strong>${esc(p.name)}</strong>`}<span class="muted small">${esc(p.slots.join(", "))}</span>${p.memberId ? `${isDraft(a) ? "" : `<button class="link small" data-ppdf="${esc(p.memberId)}">Their copy (PDF)</button>`}` : ""}</div><div class="ps-r ${outcomeClass(p)}">${pct(p.score)}</div></div>`).join("")}</div>
-          <p class="muted small">Their copy shows only that person's checks and score, plus the file result.</p>
+          <dl class="tally"><div><dt>Pass</dt><dd>${s.passed}</dd></div><div><dt>Fail</dt><dd>${s.failed}</dd></div><div><dt>N/A</dt><dd>${s.na}</dd></div>${st === "draft" ? `<div><dt>Left</dt><dd>${s.unscored}</dd></div>` : ""}</dl>
+          <div class="people-scores">${s.byPerson.map(p => `<div class="ps"><div>${p.memberId ? `<a href="#/member/${esc(p.memberId)}"><strong>${esc(p.name)}</strong></a>` : `<strong>${esc(p.name)}</strong>`}<span class="muted small">${esc(p.slots.join(", "))}</span>${p.memberId ? `<button class="link small" data-ppdf="${esc(p.memberId)}">Their copy (PDF)</button>` : ""}</div><div class="ps-r ${outcomeClass(p)}">${pct(p.score)}</div></div>`).join("")}</div>
+          <p class="muted small">Their copy shows only that person's checks and score, plus the file result and their coaching log.${st === "draft" ? " While in progress the PDFs are marked as such." : ""}</p>
           <p class="muted small">Checks v${esc(a.criteriaVersion)}.${a.loggedBy ? ` Logged by ${esc(a.auditor || a.loggedBy)} (${esc(a.loggedBy)}).` : ""}</p>
-          ${(a.editLog || []).length ? `<p class="muted small">Edits: ${a.editLog.map(e => esc(e.name || e.by) + " on " + fmtDate(String(e.at).slice(0, 10)) + (e.status === "draft" ? " (draft)" : "")).join("; ")}.</p>` : ""}
         </aside>
       </div>`;
     if ($("#btn-pdf")) $("#btn-pdf").addEventListener("click", () => downloadPdf(a.id));
     view().querySelectorAll("[data-ppdf]").forEach(b => b.addEventListener("click", () => downloadPersonPdf(a.id, b.dataset.ppdf)));
+    const decide = async (decision) => {
+      if (!confirm(decision === "approve" ? "Approve and apply these changes?" : "Reject this change request?")) return;
+      try { const rec = await Storage.decide(a.id, decision, $("#f-decide-note").value); records = records.filter(r => r.id !== rec.id).concat(rec); setStatus(decision === "approve" ? "Changes applied." : "Request rejected.", "ok"); renderAudit(a.id); }
+      catch (err) { setStatus("Could not do that: " + err.message, "err"); }
+    };
+    if ($("#btn-approve")) $("#btn-approve").addEventListener("click", () => decide("approve"));
+    if ($("#btn-reject")) $("#btn-reject").addEventListener("click", () => decide("reject"));
     if ($("#btn-del")) $("#btn-del").addEventListener("click", async () => {
       if (!confirm("Delete this audit? This cannot be undone.")) return;
       try { await Storage.remove(a.id); records = records.filter(r => r.id !== a.id); setStatus("Audit deleted.", "ok"); location.hash = "#/"; }
       catch (err) { setStatus("Could not delete: " + err.message, "err"); }
+    });
+  }
+
+  // ---- coaching log (any auditor; scores stay as they are) ---------------
+  function renderCoach(id) {
+    const a = audits().find(x => x.id === id);
+    if (!a) { view().innerHTML = `<p class="empty">Audit not found. <a href="#/">Back</a></p>`; return; }
+    if (isDraft(a)) { view().innerHTML = `<p class="empty">Score the audit first. <a href="#/audit/${esc(a.id)}">Back</a></p>`; return; }
+    const people = a.summary.byPerson.filter(p => p.memberId);
+    const draft = { coaching: a.coaching || "", coachingDate: a.coachingDate || today(), coachingByPerson: {}, final: statusOf(a) === "final" };
+    people.forEach(p => draft.coachingByPerson[p.memberId] = coachOf(a, p.memberId));
+    view().innerHTML = `
+      <nav class="crumbs"><a href="#/">Team</a> / <a href="#/audit/${esc(a.id)}">${esc(a.fileRef || a.id)}</a> / Coaching</nav>
+      <section class="hero"><div><h1>Coaching log ${statusChip(a)}</h1><p class="muted">${esc(a.fileRef)}: file result ${esc(a.summary.outcome)} (${pct(a.summary.score)}). Scores stay as they are here. If a score should change because of what came up in coaching, use ${can.admin ? "Edit" : "Request a change"} on the audit page.</p></div></section>
+      <form id="coach-form" class="coach" autocomplete="off">
+        <label>Coaching date <input id="c-date" type="date" value="${esc(draft.coachingDate)}" required></label>
+        <label>Whole-file note <textarea id="c-note" rows="3" placeholder="File PDF only; can mention anyone.">${esc(draft.coaching)}</textarea></label>
+        ${people.map(p => { const c = draft.coachingByPerson[p.memberId]; return `<div class="pn"><strong>${esc(p.name)}</strong> <span class="muted small">${esc(p.slots.join(", "))}, ${pct(p.score)} ${esc(p.outcome)}</span>
+          <label>Coaching notes <textarea data-c="${esc(p.memberId)}" data-k="notes" rows="3" placeholder="What was discussed, what ${esc(p.name.split(" ")[0])} explained.">${esc(c.notes)}</textarea></label>
+          <label>Commitment <textarea data-c="${esc(p.memberId)}" data-k="commitment" rows="2" placeholder="What ${esc(p.name.split(" ")[0])} agreed to change, by when.">${esc(c.commitment)}</textarea></label></div>`; }).join("")}
+        <label class="check"><input id="c-final" type="checkbox" ${draft.final ? "checked" : ""}> Coaching done: mark this audit final</label>
+        <div class="row-actions"><button type="submit" class="btn primary">Save coaching log</button> <a class="btn ghost" href="#/audit/${esc(a.id)}">Cancel</a></div>
+        <p class="muted small">Each person's notes and commitment go on their own copy only. Every save is listed in the audit history.</p>
+      </form>`;
+    $("#coach-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const rec = { ...a, coaching: $("#c-note").value.trim(), coachingDate: $("#c-date").value, status: $("#c-final").checked ? "final" : "scored", coachingByPerson: {} };
+      view().querySelectorAll("textarea[data-c]").forEach(t => { const c = rec.coachingByPerson[t.dataset.c] || (rec.coachingByPerson[t.dataset.c] = { notes: "", commitment: "" }); c[t.dataset.k] = t.value.trim(); });
+      Object.keys(rec.coachingByPerson).forEach(k => { const c = rec.coachingByPerson[k]; if (!c.notes && !c.commitment) delete rec.coachingByPerson[k]; });
+      try { const saved = await persistAudit(a, rec); const out = saved && saved.id ? saved : rec; records = records.filter(r => r.id !== out.id).concat(out); setStatus(out.status === "final" ? "Coaching logged. Audit is final." : "Coaching logged.", "ok"); location.hash = "#/audit/" + a.id; }
+      catch (err) { setStatus("Could not save: " + err.message, "err"); }
     });
   }
 
@@ -832,6 +996,7 @@
     if (page === "member" && arg) return renderMember(arg);
     if (page === "new") return renderNew();
     if (page === "edit" && arg) return renderNew(arg);
+    if (page === "coach" && arg) return renderCoach(arg);
     if (page === "audit" && arg) return renderAudit(arg);
     if (page === "team") return renderTeam();
     if (page === "roles") return renderRoles();

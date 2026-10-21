@@ -108,6 +108,18 @@ function pdfSection(ctx, y, title, text) {
   doc.text(lines, M, y);
   return y + lines.length * 4 + 6;
 }
+const pdfStatus = (a) => a.status === "draft" ? "In progress (not final)" : a.status === "scored" ? "Scored, awaiting coaching" : "Final";
+const pdfCoach = (a, memberId) => { const v = (a.coachingByPerson || {})[memberId]; return typeof v === "string" ? { notes: "", commitment: v } : { notes: (v && v.notes) || "", commitment: (v && v.commitment) || "" }; };
+const PDF_LOG_WORD = { created: "Created", draft: "Saved, in progress", scored: "Scored", coaching: "Coaching log updated", changed: "Changed", requested: "Change requested", approved: "Change approved", rejected: "Change rejected" };
+function pdfHistory(audit) {
+  const log = Array.isArray(audit.changeLog) ? audit.changeLog : [];
+  const keep = log.filter(e => ["changed", "approved", "rejected", "requested"].includes(e.kind));
+  if (!keep.length) return "";
+  const tidy = (t) => String(t).trim().replace(/[.\s]+$/, "");
+  return keep.map(e => (PDF_LOG_WORD[e.kind] || e.kind) + " by " + (e.decidedName || e.decidedBy || e.name || e.by) + " on " + pdfFmt(String(e.at).slice(0, 10)) +
+    (e.decidedName || e.decidedBy ? " (requested by " + (e.name || e.by) + ")" : "") + (e.reason ? ". Reason: " + tidy(e.reason) : "") + (e.note ? ". Note: " + tidy(e.note) : "") + "." +
+    (e.changes && e.changes.length ? "\n   " + e.changes.join("\n   ") : "")).join("\n\n");
+}
 function pdfFileMeta(audit) {
   const stage = CRITERIA.stages.find(s => s.letter === audit.stage);
   const rows = [
@@ -117,13 +129,13 @@ function pdfFileMeta(audit) {
     ["Qualification", audit.qualification || "-", "Auditor", audit.auditor || "-"],
   ];
   if (audit.submitWait) rows.push(["Submission wait", audit.submitWait.businessDays + " business days " + audit.submitWait.label + " (allowed " + audit.submitWait.allowed + ")" + (audit.submitWait.over ? "  OVER" : ""), "Complete / sent", pdfFmt(audit.completeDate) + " / " + pdfFmt(audit.sentDate)]);
-  rows.push(["Audit ID", audit.id, "", ""]);
+  rows.push(["Audit ID", audit.id, "Status", pdfStatus(audit) + (audit.coachingDate ? ", coached " + pdfFmt(audit.coachingDate) : "")]);
   return rows;
 }
 
 // ---------------------------------------------------------------- full file audit
 function buildAuditPdf(audit, jsPDFCtor, logoDataUrl) {
-  const ctx = pdfStart(jsPDFCtor, logoDataUrl, "B2B QA Audit", pdfTypeLabel(audit) + "  |  checks v" + audit.criteriaVersion);
+  const ctx = pdfStart(jsPDFCtor, logoDataUrl, "B2B QA Audit", pdfTypeLabel(audit) + (audit.status === "draft" ? "  |  IN PROGRESS" : "") + "  |  checks v" + audit.criteriaVersion);
   const { doc, M, C } = ctx;
   let y = 38;
   doc.setTextColor(...C.teal); doc.setFont("helvetica", "bold"); doc.setFontSize(17);
@@ -143,10 +155,11 @@ function buildAuditPdf(audit, jsPDFCtor, logoDataUrl) {
   });
   y = doc.lastAutoTable.finalY + 8;
   y = pdfFindings(ctx, y, audit, audit.itemIds, true);
-  y = pdfSection(ctx, y, "Coaching note / agreed action (file)", audit.coaching && audit.coaching.trim() ? audit.coaching : "None recorded.");
-  const per = audit.coachingByPerson || {};
-  s.byPerson.forEach(p => { if (p.memberId && per[p.memberId] && per[p.memberId].trim()) y = pdfSection(ctx, y, "Agreed actions: " + p.name, per[p.memberId]); });
-  return pdfFinish(ctx, "ATSR  |  Internal - Confidential  |  " + CRITERIA.manual);
+  y = pdfSection(ctx, y, "Coaching note (file)" + (audit.coachingDate ? ", " + pdfFmt(audit.coachingDate) : ""), audit.coaching && audit.coaching.trim() ? audit.coaching : "None recorded.");
+  s.byPerson.forEach(p => { if (!p.memberId) return; const c = pdfCoach(audit, p.memberId); if (c.notes || c.commitment) y = pdfSection(ctx, y, "Coaching: " + p.name, (c.notes ? "Notes: " + c.notes : "") + (c.notes && c.commitment ? "\n\n" : "") + (c.commitment ? "Commitment: " + c.commitment : "")); });
+  const hist = pdfHistory(audit);
+  if (hist) y = pdfSection(ctx, y, "Change history", hist);
+  return pdfFinish(ctx, "ATSR  |  Internal - Confidential  |  " + CRITERIA.manual + (audit.status === "draft" ? "  |  IN PROGRESS, NOT FINAL" : ""));
 }
 
 // ---------------------------------------------------------------- one person's copy
@@ -155,7 +168,7 @@ function buildPersonPdf(audit, memberId, jsPDFCtor, logoDataUrl) {
   if (!p) throw new Error("That person was not part of this audit.");
   const mySlots = Object.keys(audit.people || {}).filter(k => audit.people[k] === memberId);
   const myIds = audit.itemIds.filter(id => { const r = audit.results[id] || {}; return r.memberId ? r.memberId === memberId : mySlots.includes(r.owner); });
-  const ctx = pdfStart(jsPDFCtor, logoDataUrl, "QA Audit Feedback", "Your part of the file  |  checks v" + audit.criteriaVersion);
+  const ctx = pdfStart(jsPDFCtor, logoDataUrl, "QA Audit Feedback", "Your part of the file" + (audit.status === "draft" ? "  |  IN PROGRESS" : "") + "  |  checks v" + audit.criteriaVersion);
   const { doc, M, C } = ctx;
   let y = 38;
   doc.setTextColor(...C.teal); doc.setFont("helvetica", "bold"); doc.setFontSize(17);
@@ -184,9 +197,10 @@ function buildPersonPdf(audit, memberId, jsPDFCtor, logoDataUrl) {
   } else {
     y = pdfSection(ctx, y, "What to work on", "No checks on your part were failed in this audit.");
   }
-  const note = (audit.coachingByPerson || {})[memberId];
-  y = pdfSection(ctx, y, "Agreed actions", note && note.trim() ? note : "None recorded.");
-  return pdfFinish(ctx, "ATSR  |  Internal - Confidential  |  " + CRITERIA.manual + "  |  Audit " + audit.id);
+  const c = pdfCoach(audit, memberId);
+  y = pdfSection(ctx, y, "Coaching notes" + (audit.coachingDate ? ", " + pdfFmt(audit.coachingDate) : ""), c.notes || "Not yet logged.");
+  y = pdfSection(ctx, y, "Commitment", c.commitment || "Not yet recorded.");
+  return pdfFinish(ctx, "ATSR  |  Internal - Confidential  |  " + CRITERIA.manual + "  |  Audit " + audit.id + (audit.status === "draft" ? "  |  IN PROGRESS, NOT FINAL" : ""));
 }
 
 function auditPdfFilename(audit) {
