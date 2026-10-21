@@ -13,7 +13,9 @@
     auditor  view everything, add audits, change their own password.
 
   Data rules
-    - Audits cannot be changed once saved. Deletes are soft (row kept with who and when).
+    - Audits can be saved as draft or final. A draft can be edited by whoever logged it or by an
+      admin; a final audit only by an admin. Every edit is appended to the audit's editLog with
+      who and when. Deletes are soft (row kept with who and when).
     - A team member with audits can be archived, not deleted.
     - Every audit is stamped with the signed-in user's email and name.
 
@@ -303,7 +305,7 @@ export async function onRequest(context) {
     const rec = body && body.record;
     if (!rec || typeof rec.id !== "string" || !/^[A-Za-z0-9-]{3,80}$/.test(rec.id)) return fail(400, "Record needs a valid id.");
     if (rec.type !== "member" && rec.type !== "audit") return fail(400, "Unknown record type.");
-    const existing = await db.prepare("SELECT type FROM records WHERE id = ?1").bind(rec.id).first();
+    const existing = await db.prepare("SELECT type, json FROM records WHERE id = ?1").bind(rec.id).first();
     if (existing && existing.type !== rec.type) return fail(409, "That id belongs to a different kind of record.");
     if (rec.type === "member") {
       if (!isAdmin) return fail(403, "Only an admin can add or change team members.");
@@ -311,8 +313,16 @@ export async function onRequest(context) {
       rec.roles = Array.isArray(rec.roles) ? rec.roles.map(r => String(r).trim()).filter(Boolean) : [];
     }
     if (rec.type === "audit") {
-      if (existing) return fail(409, "Audits cannot be changed once saved. An admin can delete it so it can be redone.");
-      rec.loggedBy = user.email; rec.loggedAt = now(); rec.auditor = user.name;
+      rec.status = rec.status === "draft" ? "draft" : "final";
+      if (existing) {
+        let prev = {}; try { prev = JSON.parse(existing.json) || {}; } catch (e) {}
+        const own = prev.loggedBy && prev.loggedBy === user.email;
+        if (!(isAdmin || (prev.status === "draft" && own))) return fail(403, prev.status === "draft" ? "Only the person who started this draft, or an admin, can change it." : "Only an admin can change a saved audit.");
+        rec.loggedBy = prev.loggedBy || user.email; rec.loggedAt = prev.loggedAt || now(); rec.auditor = prev.auditor || user.name; rec.createdAt = prev.createdAt || rec.createdAt;
+        rec.editLog = [...(Array.isArray(prev.editLog) ? prev.editLog : []), { by: user.email, name: user.name, at: now(), status: rec.status }].slice(-50);
+      } else {
+        rec.loggedBy = user.email; rec.loggedAt = now(); rec.auditor = user.name; rec.editLog = [];
+      }
     }
     if (existing) await db.prepare("UPDATE records SET json = ?2, updated_by = ?3, updated_at = ?4, deleted_by = NULL, deleted_at = NULL WHERE id = ?1").bind(rec.id, JSON.stringify(rec), user.email, now()).run();
     else await db.prepare("INSERT INTO records (id, type, json, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5)").bind(rec.id, rec.type, JSON.stringify(rec), user.email, now()).run();

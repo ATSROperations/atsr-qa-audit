@@ -313,3 +313,9 @@ body.auth main { max-width: 440px; padding-top: 48px; }
 .person-notes label { margin-top: 8px; }
 .person-notes textarea { font-size: 13px; }
 .ps button.link.small { font-size: 12px; margin-top: 2px; text-align: left; }
+
+/* per-check reassignment, drafts */
+.who-sel { width: auto; max-width: 220px; padding: 2px 6px; font-size: 12px; margin-left: 4px; }
+.item.is-reassigned { border-left: 3px solid var(--coach-fg); }
+.reassigned { color: var(--coach-fg); font-weight: 600; font-size: 11px; }
+h1 .badge { vertical-align: middle; font-size: 13px; margin-left: 6px; }

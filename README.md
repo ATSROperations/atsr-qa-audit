@@ -50,7 +50,7 @@ Rules:
 - Only the people who audit need a login. Team members are separate: they are the people whose work gets audited and need no login.
 - The owner creates each login (name, email, level). The app shows a temporary password once; the person sets their own at first sign-in. Reset works the same way.
 - Passwords are hashed with a per-user salt and a secret pepper kept in Cloudflare. Five failed attempts lock the account for 15 minutes. Sessions last 7 days.
-- Saved audits cannot be changed by anyone. Deletes are soft: the row stays in D1 with who deleted it and when.
+- An audit can be saved as a **draft** (partly scored, no PDFs yet) or as **final**. A draft can be continued by the person who started it or by an admin. A final audit can be edited by an admin or the owner only (scores can change after coaching, and the agreed actions get filled in). Every save after the first is listed in the audit's edit log (who, when, draft or final); the original auditor's name stays on the audit. Deletes are soft: the row stays in D1 with who deleted it and when.
 - Every audit is stamped with the signed-in user's name and email.
 - A team member with audits can be archived, not deleted.
 - A person can hold several job roles. Roles are managed in the app (Manage team > Manage roles) and each says which part of a file it prefills.
@@ -79,9 +79,9 @@ Free tier limits (5 GB, millions of reads a day) are far above what this app use
 
 1. Pick the audit type. Completed: the file is at Posted or Soft Copy Received. Ongoing: any earlier stage, including On Hold. Cancelled: pick the last stage the file reached before it was cancelled.
 2. Fill in the file: stage, file reference, qualification (type the code, the title and entry requirement appear), file received date, audit date, RTO. The RTO list comes from the Master File, grouped by compliance level, with archived RTOs at the bottom. Picking the RTO shows its compliance level, Process To and type, and sets the checklist track.
-3. Assign who handled each part of the file. Roles prefill this; change it if someone else did the work. Only the parts in scope are shown.
+3. Assign who handled each part of the file. Roles prefill this; change it if someone else did the work. Only the parts in scope are shown. If one particular check was done by someone other than the person on that part (for example the drafting admin marks the RPL invoice as paid because she sends the invoice), use the small "who did this" dropdown on that check. It is optional; left alone, the check belongs to the part's person. A reassigned check scores against the person chosen, shows a "reassigned" tag, and goes on that person's copy of the PDF.
 4. Score each check Pass, Fail or N/A. A Fail needs a note. On cancelled files, use N/A for steps that never happened.
-5. Save. Then download the **File PDF** (everything, for the auditor and lead) or **Their copy** for each person (only their checks and score, the file result stated neutrally, and only their agreed actions). The whole-file coaching note never appears on a person's copy, so it can mention anyone; the per-person notes go on that person's copy only.
+5. Save as final, or save as draft to come back to (a draft needs only a file reference). Then download the **File PDF** (everything, for the auditor and lead) or **Their copy** for each person (only their checks and score, the file result stated neutrally, and only their agreed actions). The whole-file coaching note never appears on a person's copy, so it can mention anyone; the per-person notes go on that person's copy only.
 
 Dates on the audit: file received, portfolio complete (from Complete Portfolio onward) and sent to RTO (from Portfolio Sent to College onward). From these the app shows the submission wait in business days against `SUBMIT_WITHIN_BUSINESS_DAYS` in config.js (agents are invoiced weekly, so a complete, paid file should not sit longer than that). Check CP-01 (file still at Complete Portfolio) and SU-06 (file already sent) score it.
 
