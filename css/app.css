@@ -319,3 +319,40 @@ body.auth main { max-width: 440px; padding-top: 48px; }
 .item.is-reassigned { border-left: 3px solid var(--coach-fg); }
 .reassigned { color: var(--coach-fg); font-weight: 600; font-size: 11px; }
 h1 .badge { vertical-align: middle; font-size: 13px; margin-left: 6px; }
+
+/* ---- v2.4: audit life cycle, coaching log, change requests ---- */
+.chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; white-space: nowrap; vertical-align: middle; border: 1px solid transparent; }
+h1 .chip { font-size: 12px; margin-left: 6px; }
+.chip.st-draft { background: var(--none-bg); color: var(--none-fg); }
+.chip.st-scored { background: var(--coach-bg); color: var(--coach-fg); }
+.chip.st-final { background: var(--pass-bg); color: var(--pass-fg); }
+.chip.st-pending { background: var(--note-bg); color: var(--coach-fg); border-color: var(--note-line); }
+.pending { background: var(--note-bg); border: 1px solid var(--note-line); border-radius: 8px; padding: 10px 16px 14px; margin: 0 0 16px; }
+.pending h3 { margin: 6px 0 6px; }
+.pending ul.small { font-size: 13px; margin: 4px 0 10px; padding-left: 18px; }
+.pending label { display: block; font-size: 13px; margin: 8px 0; }
+.pending label input { width: 100%; box-sizing: border-box; margin-top: 4px; }
+.pending-list { background: var(--note-bg); border: 1px solid var(--note-line); border-radius: 8px; padding: 6px 16px 10px; margin: 0 0 18px; font-size: 14px; }
+.pending-list h3 { margin: 8px 0 6px; }
+.pending-list p { margin: 4px 0; }
+.changes { font-size: 13px; background: var(--surface-2); border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+.changes ul { margin: 4px 0 0; padding-left: 18px; }
+.changes li { margin: 2px 0; }
+.result-panel label.reason { display: block; font-size: 13px; margin: 8px 0; }
+.result-panel label.reason textarea { width: 100%; box-sizing: border-box; margin-top: 4px; font-size: 13px; }
+.history { font-size: 13px; padding-left: 18px; }
+.history li { margin: 6px 0; }
+.history ul.small { margin: 2px 0 0; padding-left: 16px; color: var(--muted); }
+.coach-ro { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin: 8px 0; font-size: 14px; }
+.coach-ro p { margin: 6px 0 0; white-space: pre-wrap; }
+.coach { max-width: 760px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px 16px; }
+.coach > label { display: block; margin: 10px 0; font-size: 13px; }
+.coach textarea, .coach input[type="date"] { width: 100%; box-sizing: border-box; margin-top: 4px; font-size: 14px; }
+.coach input[type="date"] { width: auto; display: block; }
+.pn { margin: 12px 0; padding: 10px 12px; background: var(--surface-2); border-radius: 8px; }
+.pn > strong { display: block; margin-bottom: 2px; }
+.pn label { display: block; font-size: 12.5px; color: var(--muted); margin: 6px 0; }
+.pn textarea { width: 100%; box-sizing: border-box; margin-top: 3px; font-size: 14px; color: var(--text); }
+label.check { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 14px 0; }
+label.check input { width: auto; margin: 0; }
+.row-actions { display: flex; gap: 8px; flex-wrap: wrap; }

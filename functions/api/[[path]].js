@@ -53,6 +53,36 @@ const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(dat
   status, headers: { "content-type": "application/json", "cache-control": "no-store", ...extra },
 });
 const fail = (status, message) => json({ error: message }, status);
+// ---- audit rules (mirrored for local mode in js/app.js; keep the two in step)
+const LOCKED_FIELDS = ["auditType", "stage", "stageName", "fileRef", "qualification", "receivedDate", "date", "completeDate", "sentDate", "rto", "rtoCode", "complianceLevel", "processTo", "compliant", "people", "overrides", "itemIds", "results"];
+const COACH_FIELDS = ["coaching", "coachingByPerson", "coachingDate"];
+const canon = (v) => v && typeof v === "object" && !Array.isArray(v) ? "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}" : JSON.stringify(v === undefined ? null : v);
+const pick = (o, keys) => { const r = {}; keys.forEach(k => { if (o && o[k] !== undefined) r[k] = o[k]; }); return r; };
+const auditStatus = (a) => a.status === "draft" ? "draft" : a.status === "scored" ? "scored" : "final";
+const auditLog = (a) => Array.isArray(a.changeLog) ? a.changeLog : (Array.isArray(a.editLog) ? a.editLog.map(e => ({ kind: e.status === "draft" ? "draft" : "changed", by: e.by, name: e.name, at: e.at, status: e.status })) : []);
+const FIELD_LABELS = { auditType: "Audit type", stage: "Stage", fileRef: "File", qualification: "Qualification", receivedDate: "File received", date: "Audit date", completeDate: "Portfolio complete", sentDate: "Sent to RTO", rto: "RTO", compliant: "Checklist track" };
+const SLOT_LABELS = { intake: "Intake", drafting: "Drafting", review: "Review and submission", compliant: "Compliant college review", lead: "Admin Lead", posting: "Posting", cancel: "Cancellation" };
+const RESULT_WORD = { pass: "Pass", fail: "Fail", na: "N/A" };
+function auditDiff(prev, next) {
+  const out = [];
+  const str = (v) => v === null || v === undefined ? "" : (typeof v === "boolean" ? (v ? "College-specific" : "Generic") : String(v));
+  Object.keys(FIELD_LABELS).forEach(k => { const a = str(prev[k]), b = str(next[k]); if (a !== b) out.push(FIELD_LABELS[k] + ": " + (a || "-") + " -> " + (b || "-")); });
+  const pn = prev.peopleNames || {}, nn = next.peopleNames || {};
+  new Set([...Object.keys(prev.people || {}), ...Object.keys(next.people || {})]).forEach(sl => {
+    const a = (prev.people || {})[sl] || "", b = (next.people || {})[sl] || "";
+    if (a !== b) out.push((SLOT_LABELS[sl] || sl) + ": " + (pn[sl] || "unassigned") + " -> " + (nn[sl] || "unassigned"));
+  });
+  const pi = prev.itemIds || [], ni = next.itemIds || [];
+  if (pi.join() !== ni.join()) out.push("Checks in scope: " + pi.length + " -> " + ni.length);
+  new Set([...pi, ...ni]).forEach(id => {
+    const a = (prev.results || {})[id] || {}, b = (next.results || {})[id] || {};
+    if ((a.result || "") !== (b.result || "")) out.push(id + ": " + (RESULT_WORD[a.result] || "unscored") + " -> " + (RESULT_WORD[b.result] || "unscored"));
+    if ((a.note || "") !== (b.note || "")) out.push(id + ": note changed");
+    if ((a.memberId || "") !== (b.memberId || "")) out.push(id + ": answerable " + (a.memberName || "from part") + " -> " + (b.memberName || "from part"));
+  });
+  return out;
+}
+
 const now = () => new Date().toISOString();
 const isEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 const norm = (s) => String(s || "").trim().toLowerCase();
@@ -313,20 +343,75 @@ export async function onRequest(context) {
       rec.roles = Array.isArray(rec.roles) ? rec.roles.map(r => String(r).trim()).filter(Boolean) : [];
     }
     if (rec.type === "audit") {
-      rec.status = rec.status === "draft" ? "draft" : "final";
       if (existing) {
         let prev = {}; try { prev = JSON.parse(existing.json) || {}; } catch (e) {}
         const own = prev.loggedBy && prev.loggedBy === user.email;
-        if (!(isAdmin || (prev.status === "draft" && own))) return fail(403, prev.status === "draft" ? "Only the person who started this draft, or an admin, can change it." : "Only an admin can change a saved audit.");
+        const prevStatus = auditStatus(prev);
+        const log = [...auditLog(prev)];
         rec.loggedBy = prev.loggedBy || user.email; rec.loggedAt = prev.loggedAt || now(); rec.auditor = prev.auditor || user.name; rec.createdAt = prev.createdAt || rec.createdAt;
-        rec.editLog = [...(Array.isArray(prev.editLog) ? prev.editLog : []), { by: user.email, name: user.name, at: now(), status: rec.status }].slice(-50);
+        if (prev.pending) rec.pending = prev.pending; else delete rec.pending;
+        if (prevStatus === "draft") {
+          // In progress: the person who started it, or an admin, can change anything.
+          if (!(isAdmin || own)) return fail(403, "Only the person who started this audit, or an admin, can change it while it is in progress.");
+          rec.status = rec.status === "draft" ? "draft" : "scored";
+          log.push({ kind: rec.status === "scored" ? "scored" : "draft", by: user.email, name: user.name, at: now(), status: rec.status });
+        } else {
+          // Scored or final: scores and file details are locked. Coaching fields stay open to every auditor.
+          const changes = auditDiff(prev, rec);
+          const reason = String(body.reason || "").trim();
+          if (changes.length) {
+            if (!isAdmin) return fail(403, "Scores and file details are locked once an audit is scored. Use Request a change; an admin or the owner approves it.");
+            if (!reason) return fail(400, "Give the reason for the change.");
+            log.push({ kind: "changed", by: user.email, name: user.name, at: now(), reason, changes });
+          }
+          rec.status = rec.status === "final" ? "final" : "scored";
+          const coachChanged = canon(pick(prev, COACH_FIELDS)) !== canon(pick(rec, COACH_FIELDS));
+          if (coachChanged || rec.status !== prevStatus) log.push({ kind: "coaching", by: user.email, name: user.name, at: now(), status: rec.status });
+        }
+        rec.changeLog = log.slice(-100); delete rec.editLog;
       } else {
-        rec.loggedBy = user.email; rec.loggedAt = now(); rec.auditor = user.name; rec.editLog = [];
+        rec.status = rec.status === "draft" ? "draft" : "scored";
+        rec.loggedBy = user.email; rec.loggedAt = now(); rec.auditor = user.name; delete rec.pending;
+        rec.changeLog = [{ kind: "created", by: user.email, name: user.name, at: now(), status: rec.status }];
       }
     }
     if (existing) await db.prepare("UPDATE records SET json = ?2, updated_by = ?3, updated_at = ?4, deleted_by = NULL, deleted_at = NULL WHERE id = ?1").bind(rec.id, JSON.stringify(rec), user.email, now()).run();
     else await db.prepare("INSERT INTO records (id, type, json, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5)").bind(rec.id, rec.type, JSON.stringify(rec), user.email, now()).run();
     return json(rec);
+  }
+  const rq = path.match(/^records\/([A-Za-z0-9-]{3,80})\/(request|decide)$/);
+  if (rq && method === "POST") {
+    let body; try { body = await readBody(); } catch (e) { return fail(400, "Invalid request."); }
+    const row = await db.prepare("SELECT type, json FROM records WHERE id = ?1 AND deleted_at IS NULL").bind(rq[1]).first();
+    if (!row || row.type !== "audit") return fail(404, "Audit not found.");
+    let prev = {}; try { prev = JSON.parse(row.json) || {}; } catch (e) {}
+    if (auditStatus(prev) === "draft") return fail(400, "This audit is still in progress; change it directly.");
+    const log = [...auditLog(prev)];
+    if (rq[2] === "request") {
+      const proposed = body && body.record;
+      if (!proposed || proposed.id !== prev.id) return fail(400, "The request must carry the full audit.");
+      const reason = String(body.reason || "").trim();
+      if (!reason) return fail(400, "Give the reason for the change.");
+      const changes = auditDiff(prev, proposed);
+      if (!changes.length) return fail(400, "Nothing has changed.");
+      if (prev.pending && prev.pending.by !== user.email) return fail(409, "A change request by " + (prev.pending.name || prev.pending.by) + " is already waiting. It has to be approved or rejected first.");
+      const record = pick(proposed, [...LOCKED_FIELDS, "peopleNames", "summary", "submitWait", "daysInPipeline", "criteriaVersion"]);
+      prev.pending = { id: "CR-" + now().replace(/[-:.TZ]/g, "").slice(0, 14), by: user.email, name: user.name, at: now(), reason, changes, record };
+      log.push({ kind: "requested", by: user.email, name: user.name, at: now(), reason, changes });
+    } else {
+      if (!isAdmin) return fail(403, "Only an admin or the owner can approve or reject a change.");
+      if (!prev.pending) return fail(400, "There is no change request waiting on this audit.");
+      const decision = body && body.decision === "approve" ? "approved" : body && body.decision === "reject" ? "rejected" : null;
+      if (!decision) return fail(400, "Decision must be approve or reject.");
+      const note = String((body && body.note) || "").trim();
+      const p = prev.pending;
+      if (decision === "approved") Object.assign(prev, p.record);
+      log.push({ kind: decision, by: p.by, name: p.name, at: now(), reason: p.reason, changes: p.changes, decidedBy: user.email, decidedName: user.name, note });
+      delete prev.pending;
+    }
+    prev.changeLog = log.slice(-100); delete prev.editLog;
+    await db.prepare("UPDATE records SET json = ?2, updated_by = ?3, updated_at = ?4 WHERE id = ?1").bind(prev.id, JSON.stringify(prev), user.email, now()).run();
+    return json(prev);
   }
   const rm = path.match(/^records\/([A-Za-z0-9-]{3,80})$/);
   if (rm && method === "DELETE") {
