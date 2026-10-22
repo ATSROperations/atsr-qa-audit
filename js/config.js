@@ -8,7 +8,7 @@ const CONFIG = {
   // The live site. On these hosts audits and team members are stored in Cloudflare (D1) and the
   // server enforces who may delete audits and manage the team. Anywhere else (a local copy, the
   // preview) the app runs in this-browser-only mode. Add a custom domain here if you set one up.
-  SHARED_HOSTS: ["atsr-qa-audit.pages.dev"],
+  SHARED_HOSTS: ["atsr-qa-audit.pages.dev", "audit.atsrpl.com.au"],
 
   // Team members created the first time an admin opens an empty app. Manage in the app after that.
   // Job roles themselves are managed in the app (Manage team > Manage roles).
