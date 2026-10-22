@@ -1,0 +1,12 @@
+# Checks GitHub every 5 minutes, so a commit to main goes live without logging in to the server.
+# Install with the service above: sudo systemctl enable --now atsr-qa-update.timer
+[Unit]
+Description=ATSR QA Audit - check GitHub for updates every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=atsr-qa-update.service
+
+[Install]
+WantedBy=timers.target

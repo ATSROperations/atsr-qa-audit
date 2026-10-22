@@ -1,30 +1,34 @@
 /*
-  ATSR B2B QA Audit - server API (Cloudflare Pages Function). Every /api/* request comes here.
-  The browser cannot bypass these rules.
+  ATSR B2B QA Audit - server API. Every /api/* request comes here. The browser cannot bypass these rules.
+  Runs in two places with no changes to this file:
+    - Cloudflare Pages Function (env.DB = a D1 database binding)
+    - the Node.js server in server/server.mjs on the Hetzner server (env.DB = a SQLite file through server/db.mjs)
 
   Sign-in: the app's own email + password login. Passwords are hashed (PBKDF2, per-user salt,
-  plus a secret pepper held only in Cloudflare). Sessions are HttpOnly cookies. Five failed
+  plus a secret pepper, AUTH_PEPPER). Each stored hash records its own round count, so raising
+  AUTH_ITERATIONS later only affects new passwords. Sessions are HttpOnly cookies. Five failed
   attempts lock an account for 15 minutes.
 
   Access levels
     owner    the one account in OWNER_EMAIL. Everything, including creating logins, resetting
-             passwords, changing access levels, disabling accounts.
-    admin    delete audits, add/rename/archive/delete team members, manage job roles.
-    auditor  view everything, add audits, change their own password.
+             passwords, changing access levels, disabling accounts, full export.
+    admin    delete audits, add/rename/archive/delete team members, manage job roles,
+             edit locked audits (with a reason), approve or reject change requests.
+    auditor  view everything, add audits, log coaching, request changes, change their own password.
 
-  Data rules
-    - Audits can be saved as draft or final. A draft can be edited by whoever logged it or by an
-      admin; a final audit only by an admin. Every edit is appended to the audit's editLog with
-      who and when. Deletes are soft (row kept with who and when).
+  Data rules (audits)
+    - draft (in progress): the person who started it, or an admin, can change anything.
+    - scored / final: scores and file details are locked. Coaching fields stay open to everyone.
+      Locked changes: admin with a reason, or an auditor's change request approved by an admin.
+    - Every step is appended to the audit's changeLog. Deletes are soft (row kept with who and when).
     - A team member with audits can be archived, not deleted.
-    - Every audit is stamped with the signed-in user's email and name.
 
-  Setup (Pages project > Settings)
-    Bindings:  D1 database, variable name DB                              (required)
-    Variables: OWNER_EMAIL             default operations@atsrpl.com.au
-               OWNER_INITIAL_PASSWORD  used once, to create the owner account on first sign-in (required)
-               AUTH_PEPPER             long random secret; set once and never change          (recommended)
-               AUTH_ITERATIONS         PBKDF2 rounds, default 50000 (free plan CPU budget)
+  Settings (Cloudflare: Pages project > Settings; Node: environment variables, see server/README.md)
+    DB                      D1 binding (Cloudflare only; Node opens its own SQLite file)
+    OWNER_EMAIL             default operations@atsrpl.com.au
+    OWNER_INITIAL_PASSWORD  used once, to create the owner account on first sign-in
+    AUTH_PEPPER             long random secret; set once and never change
+    AUTH_ITERATIONS         PBKDF2 rounds for new passwords, default 50000 (Cloudflare free CPU budget)
 */
 
 import { MASTER } from "./master-data.js";
@@ -192,7 +196,7 @@ export async function onRequest(context) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/^\/api\/?/, "").replace(/\/$/, "");
   const method = request.method.toUpperCase();
-  if (!env.DB) return fail(500, "Storage is not set up. Bind a D1 database to this Pages project with the variable name DB.");
+  if (!env.DB) return fail(500, "Storage is not set up. On Cloudflare, bind a D1 database to this Pages project with the variable name DB.");
   const db = env.DB;
   await ensureSchema(db);
   const OWNER = norm(env.OWNER_EMAIL || DEFAULT_OWNER);
@@ -323,6 +327,17 @@ export async function onRequest(context) {
       return json(roles);
     }
     return fail(405, "Method not allowed.");
+  }
+
+  // ---- full export (owner): everything needed to move the app to another host. Includes password
+  // hashes, which only work again with the same AUTH_PEPPER. Sessions are left out on purpose.
+  if (path === "export" && method === "GET") {
+    if (!isOwner) return fail(403, "Only the owner can export everything.");
+    const users = (await db.prepare("SELECT * FROM users ORDER BY created_at").all()).results;
+    const records = (await db.prepare("SELECT * FROM records ORDER BY created_at").all()).results;
+    const settings = (await db.prepare("SELECT * FROM settings").all()).results;
+    return json({ app: "atsr-qa-audit", format: 1, exportedAt: now(), exportedBy: user.email, users, records, settings }, 200,
+      { "content-disposition": 'attachment; filename="atsr-qa-full-export-' + now().slice(0, 10) + '.json"' });
   }
 
   // ---- records

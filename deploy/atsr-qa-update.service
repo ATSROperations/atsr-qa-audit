@@ -1,0 +1,8 @@
+# Pulls new commits from GitHub and restarts the app if anything changed. Run by the timer below.
+[Unit]
+Description=ATSR QA Audit - update from GitHub
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/atsr-qa-audit/app/deploy/update.sh

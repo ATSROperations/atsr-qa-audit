@@ -5,9 +5,9 @@
 const CONFIG = {
   appName: "B2B QA Audit",
 
-  // The live site. On these hosts audits and team members are stored in Cloudflare (D1) and the
-  // server enforces who may delete audits and manage the team. Anywhere else (a local copy, the
-  // preview) the app runs in this-browser-only mode. Add a custom domain here if you set one up.
+  // The live site on Cloudflare. On these hosts the app signs people in and stores everything on the
+  // server, which enforces the access rules. The Node server version needs no entry here (it marks its
+  // own pages). Anywhere else (a local copy, the preview) the app runs in this-browser-only mode.
   SHARED_HOSTS: ["atsr-qa-audit.pages.dev", "audit.atsrpl.com.au"],
 
   // Team members created the first time an admin opens an empty app. Manage in the app after that.

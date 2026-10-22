@@ -14,7 +14,11 @@
 const Storage = (() => {
   const KEY = "atsr_qa_records_v1";
   const host = location.hostname;
-  const mode = (CONFIG.SHARED_HOSTS || []).some(h => host === h || host.endsWith("." + h)) ? "cloudflare" : "local";
+  // "cloudflare" = shared mode with sign-in (the name is historical; it also covers the Node server).
+  // The Node server (server/server.mjs) marks its pages with <meta name="qa-server">, so any domain it
+  // is served on works, including the hosting panel's test domain.
+  const servedByNode = !!document.querySelector('meta[name="qa-server"]');
+  const mode = servedByNode || (CONFIG.SHARED_HOSTS || []).some(h => host === h || host.endsWith("." + h)) ? "cloudflare" : "local";
   const DEFAULT_ROLES = [
     { name: "Intake Admin", slot: "intake" }, { name: "Drafting Admin", slot: "drafting" },
     { name: "Compliant Colleges Admin", slot: "compliant" }, { name: "Admin Lead", slot: "lead" }, { name: "BD Manager", slot: "posting" },
@@ -42,6 +46,7 @@ const Storage = (() => {
     async login() { throw new Error("No sign-in in local mode."); },
     async logout() { return true; },
     async changePassword() { throw new Error("No passwords in local mode."); },
+    async fullExport() { throw new Error("Full export is only available on the live site."); },
     async listUsers() { return []; }, async createUser() { throw new Error("Logins only exist on the live site."); },
     async updateUser() { throw new Error("Logins only exist on the live site."); }, async resetUser() { throw new Error("Logins only exist on the live site."); },
   };
@@ -80,6 +85,7 @@ const Storage = (() => {
     async replaceAll() { throw new Error("Import is only available in a local copy."); },
     async setRoles(next) { roles = await api("roles", { method: "PUT", body: JSON.stringify({ roles: next }) }); return roles; },
     async listUsers() { return api("users"); },
+    async fullExport() { return api("export"); },
     async createUser(u) { return api("users", { method: "POST", body: JSON.stringify(u) }); },
     async updateUser(id, changes) { return api("users/" + encodeURIComponent(id), { method: "PUT", body: JSON.stringify(changes) }); },
     async resetUser(id) { return api("users/" + encodeURIComponent(id) + "/reset", { method: "POST" }); },

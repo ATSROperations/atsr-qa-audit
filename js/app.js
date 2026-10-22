@@ -958,11 +958,19 @@
     const isCloud = cloud();
     view().innerHTML = `
       <nav class="crumbs"><a href="#/">Team</a> / Backup</nav>
-      <section class="hero"><div><h1>Backup</h1><p class="muted">${isCloud ? "Records are stored in Cloudflare. Export a JSON copy from time to time as an extra backup." : "This copy keeps records in this browser only. Export a JSON backup regularly."}</p></div></section>
-      <div class="hero-actions"><button class="btn primary" id="btn-export">Export JSON</button>${isCloud ? "" : `<label class="btn ghost">Import JSON <input type="file" id="btn-import" accept="application/json" hidden></label>`}</div>
-      <p class="muted small">${records.length} records (${records.filter(r => r.type === "member").length} members, ${records.filter(r => r.type === "audit").length} audits).</p>`;
-    $("#btn-export").addEventListener("click", () => { const blob = new Blob([JSON.stringify(records, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "atsr-qa-backup-" + today() + ".json"; a.click(); });
-    if (isCloud) return;
+      <section class="hero"><div><h1>Backup</h1><p class="muted">${isCloud ? "Everything is stored on the server. Export a copy from time to time as an extra backup." : "This copy keeps records in this browser only. Export a JSON backup regularly."}</p></div></section>
+      <div class="hero-actions"><button class="btn primary" id="btn-export">Export JSON</button>${isCloud ? `<button class="btn ghost" id="btn-full">Full export (for moving servers)</button>` : `<label class="btn ghost">Import JSON <input type="file" id="btn-import" accept="application/json" hidden></label>`}</div>
+      <p class="muted small">${records.length} records (${records.filter(r => r.type === "member").length} members, ${records.filter(r => r.type === "audit").length} audits).</p>
+      ${isCloud ? `<p class="muted small">Full export includes logins (password hashes), deleted audits and roles. Keep the file private. It is what server/import.mjs loads on a new server.</p>` : ""}`;
+    const save = (data, name) => { const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click(); };
+    $("#btn-export").addEventListener("click", () => save(records, "atsr-qa-backup-" + today() + ".json"));
+    if (isCloud) {
+      $("#btn-full").addEventListener("click", async () => {
+        try { const data = await Storage.fullExport(); save(data, "atsr-qa-full-export-" + today() + ".json"); setStatus("Full export downloaded: " + data.users.length + " logins, " + data.records.length + " records.", "ok"); }
+        catch (err) { setStatus("Export failed: " + err.message, "err"); }
+      });
+      return;
+    }
     $("#btn-import").addEventListener("change", async (e) => {
       const file = e.target.files[0]; if (!file) return;
       try { const data = JSON.parse(await file.text()); if (!Array.isArray(data)) throw new Error("Not a backup file."); if (!confirm("Replace everything in this browser with " + data.length + " records from the file?")) return; await Storage.replaceAll(data); records = data; setStatus("Imported.", "ok"); location.hash = "#/"; }

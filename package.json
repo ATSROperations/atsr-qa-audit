@@ -1,0 +1,14 @@
+{
+  "name": "atsr-qa-audit",
+  "version": "2.4.0",
+  "private": true,
+  "description": "ATSR B2B QA Audit. Runs on Cloudflare Pages or on any server with Node.js 22.13+.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/server.mjs",
+    "import": "node --disable-warning=ExperimentalWarning server/import.mjs"
+  }
+}

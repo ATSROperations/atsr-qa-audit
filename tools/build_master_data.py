@@ -1,5 +1,5 @@
 """
-Rebuild js/master-data.js from the ATSR Master File.
+Rebuild functions/api/master-data.js from the ATSR Master File.
 
 Usage:  python3 tools/build_master_data.py "ATSR_Master_File.xlsx"
 Needs:  pip install openpyxl
@@ -42,7 +42,7 @@ quals.sort(key=lambda x: x["code"])
 out = ("/* Generated from the ATSR Master File on " + datetime.date.today().isoformat() + ".\n"
        "   Rebuild with tools/build_master_data.py, or edit rows here directly.\n"
        "   level: Compliant | Less Compliant | Non Compliant. archived: no longer used for new files. */\n\n"
-       "const MASTER = {\n  rtos: [\n" + ",\n".join("    " + json.dumps(x, ensure_ascii=False) for x in rtos) + "\n  ],\n"
+       "export const MASTER = {\n  rtos: [\n" + ",\n".join("    " + json.dumps(x, ensure_ascii=False) for x in rtos) + "\n  ],\n"
        "  qualifications: [\n" + ",\n".join("    " + json.dumps(x, ensure_ascii=False) for x in quals) + "\n  ],\n};\n")
-open("js/master-data.js", "w", encoding="utf-8").write(out)
-print(len(rtos), "RTOs,", len(quals), "qualifications written to js/master-data.js")
+open("functions/api/master-data.js", "w", encoding="utf-8").write(out)
+print(len(rtos), "RTOs,", len(quals), "qualifications written to functions/api/master-data.js")
