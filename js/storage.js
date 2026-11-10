@@ -21,7 +21,7 @@ const Storage = (() => {
   const mode = servedByNode || (CONFIG.SHARED_HOSTS || []).some(h => host === h || host.endsWith("." + h)) ? "cloudflare" : "local";
   const DEFAULT_ROLES = [
     { name: "Intake Admin", slot: "intake" }, { name: "Drafting Admin", slot: "drafting" },
-    { name: "Compliant Colleges Admin", slot: "compliant" }, { name: "Admin Lead", slot: "lead" }, { name: "BD Manager", slot: "posting" },
+    { name: "Compliant Colleges Admin", slot: "compliant" }, { name: "Admin Lead", slot: "lead" }, { name: "Bookkeeper", slot: "accounts" }, { name: "BD Manager", slot: "posting" },
   ];
   let me = { email: null, name: "Local user", level: "owner" };
   let roles = DEFAULT_ROLES;
@@ -29,7 +29,16 @@ const Storage = (() => {
   // ---- local ------------------------------------------------------------
   const readLocal = () => { try { return JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (e) { return []; } };
   const writeLocal = (records) => { try { localStorage.setItem(KEY, JSON.stringify(records)); } catch (e) { console.error("localStorage write failed", e); } };
-  const readRoles = () => { try { return JSON.parse(localStorage.getItem(KEY + "_roles")) || DEFAULT_ROLES; } catch (e) { return DEFAULT_ROLES; } };
+  const readRoles = () => {
+    let roles; try { roles = JSON.parse(localStorage.getItem(KEY + "_roles")); } catch (e) { roles = null; }
+    if (!roles) { try { localStorage.setItem(KEY + "_roles_seeded", JSON.stringify(DEFAULT_ROLES.map(d => d.slot))); } catch (e) {} return DEFAULT_ROLES; }
+    let seeded; try { seeded = JSON.parse(localStorage.getItem(KEY + "_roles_seeded")); } catch (e) { seeded = null; }
+    const seededSet = new Set(seeded || roles.map(r => r.slot));
+    const missing = DEFAULT_ROLES.filter(d => !seededSet.has(d.slot) && !roles.some(r => r.name.toLowerCase() === d.name.toLowerCase()));
+    roles = [...roles, ...missing];
+    try { localStorage.setItem(KEY + "_roles_seeded", JSON.stringify([...new Set([...seededSet, ...DEFAULT_ROLES.map(d => d.slot)])])); if (missing.length) localStorage.setItem(KEY + "_roles", JSON.stringify(roles)); } catch (e) {}
+    return roles;
+  };
   const local = {
     async init() {
       roles = readRoles();

@@ -48,9 +48,10 @@ const DEFAULT_ROLES = [
   { name: "Drafting Admin", slot: "drafting" },
   { name: "Compliant Colleges Admin", slot: "compliant" },
   { name: "Admin Lead", slot: "lead" },
+  { name: "Bookkeeper", slot: "accounts" },
   { name: "BD Manager", slot: "posting" },
 ];
-const SLOT_KEYS = ["intake", "drafting", "review", "compliant", "lead", "posting", "cancel", "none"];
+const SLOT_KEYS = ["intake", "drafting", "review", "compliant", "lead", "accounts", "posting", "cancel", "none"];
 
 // ---------------------------------------------------------------- helpers
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), {
@@ -58,14 +59,14 @@ const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(dat
 });
 const fail = (status, message) => json({ error: message }, status);
 // ---- audit rules (mirrored for local mode in js/app.js; keep the two in step)
-const LOCKED_FIELDS = ["auditType", "stage", "stageName", "fileRef", "qualification", "receivedDate", "date", "completeDate", "sentDate", "rto", "rtoCode", "complianceLevel", "processTo", "compliant", "people", "overrides", "itemIds", "results"];
+const LOCKED_FIELDS = ["auditType", "stage", "stageName", "fileRef", "qualification", "receivedDate", "date", "completeDate", "sentDate", "rto", "rtoCode", "complianceLevel", "processTo", "compliant", "people", "extraPeople", "extraPeopleNames", "overrides", "itemIds", "results"];
 const COACH_FIELDS = ["coaching", "coachingByPerson", "coachingDate"];
 const canon = (v) => v && typeof v === "object" && !Array.isArray(v) ? "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}" : JSON.stringify(v === undefined ? null : v);
 const pick = (o, keys) => { const r = {}; keys.forEach(k => { if (o && o[k] !== undefined) r[k] = o[k]; }); return r; };
 const auditStatus = (a) => a.status === "draft" ? "draft" : a.status === "scored" ? "scored" : "final";
 const auditLog = (a) => Array.isArray(a.changeLog) ? a.changeLog : (Array.isArray(a.editLog) ? a.editLog.map(e => ({ kind: e.status === "draft" ? "draft" : "changed", by: e.by, name: e.name, at: e.at, status: e.status })) : []);
 const FIELD_LABELS = { auditType: "Audit type", stage: "Stage", fileRef: "File", qualification: "Qualification", receivedDate: "File received", date: "Audit date", completeDate: "Portfolio complete", sentDate: "Sent to RTO", rto: "RTO", compliant: "Checklist track" };
-const SLOT_LABELS = { intake: "Intake", drafting: "Drafting", review: "Review and submission", compliant: "Compliant college review", lead: "Admin Lead", posting: "Posting", cancel: "Cancellation" };
+const SLOT_LABELS = { intake: "Intake", drafting: "Drafting", review: "Review and submission", compliant: "Compliant college review", lead: "Admin Lead", accounts: "Accounts", posting: "Posting", cancel: "Cancellation" };
 const RESULT_WORD = { pass: "Pass", fail: "Fail", na: "N/A" };
 function auditDiff(prev, next) {
   const out = [];
@@ -78,11 +79,14 @@ function auditDiff(prev, next) {
   });
   const pi = prev.itemIds || [], ni = next.itemIds || [];
   if (pi.join() !== ni.join()) out.push("Checks in scope: " + pi.length + " -> " + ni.length);
+  const xn = (a) => Object.entries(a.extraPeople || {}).map(([sl, ids]) => (SLOT_LABELS[sl] || sl) + ": " + ids.map(id => (a.extraPeopleNames || {})[id] || id).join(", ")).sort().join("; ");
+  if (xn(prev) !== xn(next)) out.push("Additional people: " + (xn(prev) || "none") + " -> " + (xn(next) || "none"));
   new Set([...pi, ...ni]).forEach(id => {
     const a = (prev.results || {})[id] || {}, b = (next.results || {})[id] || {};
     if ((a.result || "") !== (b.result || "")) out.push(id + ": " + (RESULT_WORD[a.result] || "unscored") + " -> " + (RESULT_WORD[b.result] || "unscored"));
     if ((a.note || "") !== (b.note || "")) out.push(id + ": note changed");
-    if ((a.memberId || "") !== (b.memberId || "")) out.push(id + ": answerable " + (a.memberName || "from part") + " -> " + (b.memberName || "from part"));
+    const an = (a.memberIds || (a.memberId ? [a.memberId] : [])).join(), bn = (b.memberIds || (b.memberId ? [b.memberId] : [])).join();
+    if (an !== bn) out.push(id + ": answerable " + (a.memberNames || a.memberName || "from part") + " -> " + (b.memberNames || b.memberName || "from part"));
   });
   return out;
 }
@@ -162,6 +166,24 @@ async function getSetting(db, key, fallback) {
   const row = await db.prepare("SELECT value FROM settings WHERE key = ?1").bind(key).first();
   if (!row) return fallback;
   try { return JSON.parse(row.value); } catch (e) { return fallback; }
+}
+// Stored roles plus any default role whose part of the file has no role yet (so a new slot added in
+// an update, like Accounts, gets its default role without anyone having to add it by hand).
+// Each default is added once (the "roles_seeded" setting remembers which parts have been seeded), so a
+// role an admin deletes on purpose stays deleted.
+async function loadRoles(db) {
+  const row = await db.prepare("SELECT value FROM settings WHERE key = 'roles'").first();
+  if (!row) { await setSetting(db, "roles_seeded", DEFAULT_ROLES.map(d => d.slot), "system"); return DEFAULT_ROLES; }
+  let roles; try { roles = JSON.parse(row.value) || []; } catch (e) { roles = []; }
+  const seeded = await getSetting(db, "roles_seeded", null);
+  const seededSet = new Set(seeded || roles.map(r => r.slot));   // first run after this update: what is stored counts as seeded
+  const missing = DEFAULT_ROLES.filter(d => !seededSet.has(d.slot) && !roles.some(r => r.name.toLowerCase() === d.name.toLowerCase()));
+  if (missing.length || !seeded) {
+    roles = [...roles, ...missing];
+    await setSetting(db, "roles_seeded", [...new Set([...seededSet, ...DEFAULT_ROLES.map(d => d.slot)])], "system");
+    if (missing.length) await setSetting(db, "roles", roles, "system");
+  }
+  return roles;
 }
 async function setSetting(db, key, value, by) {
   await db.prepare("INSERT INTO settings (key, value, updated_by, updated_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_by = ?3, updated_at = ?4")
@@ -270,7 +292,7 @@ export async function onRequest(context) {
   // everything the app needs at start, in one call
   if (path === "bootstrap" && method === "GET") {
     const { results } = await db.prepare("SELECT json FROM records WHERE deleted_at IS NULL ORDER BY created_at").all();
-    const roles = await getSetting(db, "roles", DEFAULT_ROLES);
+    const roles = await loadRoles(db);
     return json({ me, roles, master: MASTER, collegeNotes: COLLEGE_NOTES, records: results.map(r => JSON.parse(r.json)) });
   }
 
@@ -316,7 +338,7 @@ export async function onRequest(context) {
 
   // ---- job roles (read: everyone, write: admin+)
   if (path === "roles") {
-    if (method === "GET") return json(await getSetting(db, "roles", DEFAULT_ROLES));
+    if (method === "GET") return json(await loadRoles(db));
     if (method === "PUT") {
       if (!isAdmin) return fail(403, "Only an admin can change roles.");
       let body; try { body = await readBody(); } catch (e) { return fail(400, "Invalid request."); }

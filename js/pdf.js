@@ -5,9 +5,11 @@
                                                   with the file outcome stated neutrally
 */
 
+// ATSR Brand and Design System v1.1: Teal #1A4D4D, Turquoise #27EAA6, Lime #D0FF71, Canvas Cream #EBFFF6,
+// Charcoal #222328, muted text #5A6E6D. "Needs coaching" uses Periwinkle #A8A3FF; red is the one functional exception.
 const PDF_COLORS = {
-  teal: [13, 75, 63], turquoise: [39, 234, 166], mint: [232, 245, 238],
-  charcoal: [35, 36, 40], grey: [110, 112, 116], red: [179, 38, 30], amber: [183, 121, 31],
+  teal: [26, 77, 77], turquoise: [39, 234, 166], lime: [208, 255, 113], mint: [235, 255, 246], periwinkle: [168, 163, 255],
+  charcoal: [34, 35, 40], grey: [90, 110, 109], red: [179, 38, 30], amber: [93, 86, 204],
 };
 const PDF_M = 16;
 const pdfFmt = (iso) => iso ? iso.split("-").reverse().join("/") : "-";
@@ -74,7 +76,12 @@ function pdfFindings(ctx, y, audit, itemIds, withOwner) {
     if (it.phase !== lastPhase) { const ph = CRITERIA.phases.find(p => p.id === it.phase); body.push([{ content: ph.title + "  (" + ph.sop + ")", colSpan: withOwner ? 6 : 5, styles: { fillColor: C.mint, fontStyle: "bold", textColor: C.teal } }]); lastPhase = it.phase; }
     n++;
     const row = [String(n), it.text];
-    if (withOwner) { const slot = CRITERIA.slots.find(x => x.id === r.owner); const who = r.memberName || (audit.peopleNames && audit.peopleNames[r.owner]) || ""; row.push((slot ? slot.label : "") + (who ? "\n" + who : "") + (audit.overrides && audit.overrides[id] ? "\n(reassigned)" : "")); }
+    if (withOwner) {
+      const slot = CRITERIA.slots.find(x => x.id === r.owner); const who = r.memberNames || r.memberName || (audit.peopleNames && audit.peopleNames[r.owner]) || "";
+      const ids = r.memberIds || (r.memberId ? [r.memberId] : []);
+      const out = ids.some(m => m !== (audit.people || {})[r.owner] && !((audit.extraPeople || {})[r.owner] || []).includes(m));
+      row.push((slot ? slot.label : "") + (who ? "\n" + who : "") + (ids.length > 1 ? "\n(shared)" : "") + (out ? "\n(reassigned)" : ""));
+    }
     row.push(it.critical ? "Critical" : "Standard", pdfResult(r.result), r.note || "");
     body.push(row);
   });
@@ -108,6 +115,7 @@ function pdfSection(ctx, y, title, text) {
   doc.text(lines, M, y);
   return y + lines.length * 4 + 6;
 }
+const pdfOrder = (ids) => { const set = new Set(ids); return [...CRITERIA.items.filter(it => set.has(it.id)).map(it => it.id), ...ids.filter(id => !CRITERIA.items.some(it => it.id === id))]; };
 const pdfStatus = (a) => a.status === "draft" ? "In progress (not final)" : a.status === "scored" ? "Scored, awaiting coaching" : "Final";
 const pdfCoach = (a, memberId) => { const v = (a.coachingByPerson || {})[memberId]; return typeof v === "string" ? { notes: "", commitment: v } : { notes: (v && v.notes) || "", commitment: (v && v.commitment) || "" }; };
 const PDF_LOG_WORD = { created: "Created", draft: "Saved, in progress", scored: "Scored", coaching: "Coaching log updated", changed: "Changed", requested: "Change requested", approved: "Change approved", rejected: "Change rejected" };
@@ -128,6 +136,7 @@ function pdfFileMeta(audit) {
     ["Compliance", (audit.complianceLevel ? audit.complianceLevel + ", " : "") + (audit.compliant ? "college-specific process" : "generic checklist"), "Process To", audit.processTo || "-"],
     ["Qualification", audit.qualification || "-", "Auditor", audit.auditor || "-"],
   ];
+  if (audit.receiptWait) rows.push(["Receipt to RTO", audit.receiptWait.businessDays + " business days " + audit.receiptWait.label + " (target " + audit.receiptWait.target + ")" + (audit.receiptWait.over ? "  OVER" : ""), "", ""]);
   if (audit.submitWait) rows.push(["Submission wait", audit.submitWait.businessDays + " business days " + audit.submitWait.label + " (allowed " + audit.submitWait.allowed + ")" + (audit.submitWait.over ? "  OVER" : ""), "Complete / sent", pdfFmt(audit.completeDate) + " / " + pdfFmt(audit.sentDate)]);
   rows.push(["Audit ID", audit.id, "Status", pdfStatus(audit) + (audit.coachingDate ? ", coached " + pdfFmt(audit.coachingDate) : "")]);
   return rows;
@@ -154,7 +163,7 @@ function buildAuditPdf(audit, jsPDFCtor, logoDataUrl) {
     didParseCell: (d) => { if (d.section === "body" && d.column.index === 6) d.cell.styles.textColor = pdfColorFor(s.byPerson[d.row.index]); },
   });
   y = doc.lastAutoTable.finalY + 8;
-  y = pdfFindings(ctx, y, audit, audit.itemIds, true);
+  y = pdfFindings(ctx, y, audit, pdfOrder(audit.itemIds), true);
   y = pdfSection(ctx, y, "Coaching note (file)" + (audit.coachingDate ? ", " + pdfFmt(audit.coachingDate) : ""), audit.coaching && audit.coaching.trim() ? audit.coaching : "None recorded.");
   s.byPerson.forEach(p => { if (!p.memberId) return; const c = pdfCoach(audit, p.memberId); if (c.notes || c.commitment) y = pdfSection(ctx, y, "Coaching: " + p.name, (c.notes ? "Notes: " + c.notes : "") + (c.notes && c.commitment ? "\n\n" : "") + (c.commitment ? "Commitment: " + c.commitment : "")); });
   const hist = pdfHistory(audit);
@@ -167,7 +176,7 @@ function buildPersonPdf(audit, memberId, jsPDFCtor, logoDataUrl) {
   const p = (audit.summary.byPerson || []).find(x => x.memberId === memberId);
   if (!p) throw new Error("That person was not part of this audit.");
   const mySlots = Object.keys(audit.people || {}).filter(k => audit.people[k] === memberId);
-  const myIds = audit.itemIds.filter(id => { const r = audit.results[id] || {}; return r.memberId ? r.memberId === memberId : mySlots.includes(r.owner); });
+  const myIds = pdfOrder(audit.itemIds).filter(id => { const r = audit.results[id] || {}; const ids = r.memberIds || (r.memberId ? [r.memberId] : []); return ids.length ? ids.includes(memberId) : mySlots.includes(r.owner); });
   const ctx = pdfStart(jsPDFCtor, logoDataUrl, "QA Audit Feedback", "Your part of the file" + (audit.status === "draft" ? "  |  IN PROGRESS" : "") + "  |  checks v" + audit.criteriaVersion);
   const { doc, M, C } = ctx;
   let y = 38;

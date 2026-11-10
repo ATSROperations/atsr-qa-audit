@@ -20,6 +20,7 @@
   const stageByLetter = (l) => CRITERIA.stages.find(s => s.letter === l);
   const phaseById = (id) => CRITERIA.phases.find(p => p.id === id);
   const slotById = (id) => CRITERIA.slots.find(s => s.id === id);
+  const inCriteriaOrder = (ids) => { const set = new Set(ids); return [...CRITERIA.items.filter(it => set.has(it.id)).map(it => it.id), ...ids.filter(id => !itemById(id))]; };
   const compKey = (compliant) => compliant ? "compliant" : "noncompliant";
   const ownerOf = (item, ck) => typeof item.owner === "string" ? item.owner : item.owner[ck];
   const itemById = (id) => CRITERIA.items.find(i => i.id === id);
@@ -64,21 +65,28 @@
     const score = (passed + failed) ? passed / (passed + failed) : null;
     return { passed, failed, na, unscored: items.length - passed - failed - na, score, criticalFail, outcome: band(score, criticalFail) };
   }
-  // Who is answerable for a check: the per-check reassignment if there is one, else the person in the slot.
-  const resolveOwner = (item, ck, people, overrides) => (overrides && overrides[item.id]) || people[ownerOf(item, ck)] || null;
-  function computeSummary(items, results, compliant, people, overrides) {
+  // Who is answerable for a check: the people picked on that check (one or several), else the person in the slot.
+  // overrides[id] is a list of member ids; older audits stored a single id string.
+  const overrideList = (overrides, id) => { const v = overrides && overrides[id]; return Array.isArray(v) ? v.filter(Boolean) : (v ? [v] : []); };
+  const resolveOwners = (item, ck, people, overrides) => { const o = overrideList(overrides, item.id); if (o.length) return o; const p = people[ownerOf(item, ck)]; return p ? [p] : []; };
+  const resolveOwner = (item, ck, people, overrides) => resolveOwners(item, ck, people, overrides)[0] || null;
+  // "reassigned" = someone on the check who is not listed on that part of the file (its person or the added people)
+  const isOutside = (memberId, slotId, people, extraPeople) => memberId !== (people || {})[slotId] && !((extraPeople || {})[slotId] || []).includes(memberId);
+  function computeSummary(items, results, compliant, people, overrides, extraPeople) {
     const ck = compKey(compliant);
     const overall = tally(items, results);
     const byPerson = [];
     items.forEach(it => {
       const slotId = ownerOf(it, ck); const slot = slotById(slotId);
-      const memberId = resolveOwner(it, ck, people, overrides);
-      const key = memberId || "unassigned-" + slotId;
-      let p = byPerson.find(x => x.key === key);
-      if (!p) { const m = memberId ? memberById(memberId) : null; p = { key, memberId, name: m ? m.name : "Unassigned", slots: [], items: [] }; byPerson.push(p); }
-      const label = (overrides && overrides[it.id]) ? "Reassigned checks" : slot.label;
-      if (!p.slots.includes(label)) p.slots.push(label);
-      p.items.push(it);
+      const owners = resolveOwners(it, ck, people, overrides);
+      (owners.length ? owners : [null]).forEach(memberId => {
+        const key = memberId || "unassigned-" + slotId;
+        let p = byPerson.find(x => x.key === key);
+        if (!p) { const m = memberId ? memberById(memberId) : null; p = { key, memberId, name: m ? m.name : "Unassigned", slots: [], items: [] }; byPerson.push(p); }
+        const label = memberId && isOutside(memberId, slotId, people, extraPeople) ? "Reassigned checks" : slot.label;
+        if (!p.slots.includes(label)) p.slots.push(label);
+        p.items.push(it);
+      });
     });
     byPerson.forEach(p => { Object.assign(p, tally(p.items, results)); delete p.items; });
     return { ...overall, byPerson };
@@ -101,7 +109,7 @@
   const auditLog = (a) => Array.isArray(a.changeLog) ? a.changeLog : (Array.isArray(a.editLog) ? a.editLog.map(e => ({ kind: e.status === "draft" ? "draft" : "changed", by: e.by, name: e.name, at: e.at, status: e.status })) : []);
   // per-person coaching: { notes, commitment }; older audits stored a plain string (treated as the commitment)
   const coachOf = (a, memberId) => { const v = (a.coachingByPerson || {})[memberId]; return typeof v === "string" ? { notes: "", commitment: v } : { notes: (v && v.notes) || "", commitment: (v && v.commitment) || "" }; };
-  const LOCKED_FIELDS = ["auditType", "stage", "stageName", "fileRef", "qualification", "receivedDate", "date", "completeDate", "sentDate", "rto", "rtoCode", "complianceLevel", "processTo", "compliant", "people", "overrides", "itemIds", "results"];
+  const LOCKED_FIELDS = ["auditType", "stage", "stageName", "fileRef", "qualification", "receivedDate", "date", "completeDate", "sentDate", "rto", "rtoCode", "complianceLevel", "processTo", "compliant", "people", "extraPeople", "overrides", "itemIds", "results"];
   const COACH_FIELDS = ["coaching", "coachingByPerson", "coachingDate"];
   const FIELD_LABELS = { auditType: "Audit type", stage: "Stage", fileRef: "File", qualification: "Qualification", receivedDate: "File received", date: "Audit date", completeDate: "Portfolio complete", sentDate: "Sent to RTO", rto: "RTO", compliant: "Checklist track" };
   const RESULT_WORD = { pass: "Pass", fail: "Fail", na: "N/A" };
@@ -116,11 +124,14 @@
     });
     const pi = prev.itemIds || [], ni = next.itemIds || [];
     if (pi.join() !== ni.join()) out.push("Checks in scope: " + pi.length + " -> " + ni.length);
+    const xn = (a) => Object.entries(a.extraPeople || {}).map(([sl, ids]) => (slotById(sl) || { label: sl }).label + ": " + ids.map(id => (a.extraPeopleNames || {})[id] || id).join(", ")).sort().join("; ");
+    if (xn(prev) !== xn(next)) out.push("Additional people: " + (xn(prev) || "none") + " -> " + (xn(next) || "none"));
     new Set([...pi, ...ni]).forEach(id => {
       const a = (prev.results || {})[id] || {}, b = (next.results || {})[id] || {};
       if ((a.result || "") !== (b.result || "")) out.push(id + ": " + (RESULT_WORD[a.result] || "unscored") + " -> " + (RESULT_WORD[b.result] || "unscored"));
       if ((a.note || "") !== (b.note || "")) out.push(id + ": note changed");
-      if ((a.memberId || "") !== (b.memberId || "")) out.push(id + ": answerable " + (a.memberName || "from part") + " -> " + (b.memberName || "from part"));
+      const an = (a.memberIds || (a.memberId ? [a.memberId] : [])).join(), bn = (b.memberIds || (b.memberId ? [b.memberId] : [])).join();
+      if (an !== bn) out.push(id + ": answerable " + (a.memberNames || a.memberName || "from part") + " -> " + (b.memberNames || b.memberName || "from part"));
     });
     return out;
   }
@@ -286,14 +297,14 @@
       auditType: "completed", stage: "G", fileRef: "", qualification: "", qualOther: "", receivedDate: "", completeDate: "", sentDate: "", date: today(),
       auditor: cloud() ? Storage.me.name : (localStorage.getItem("atsr_qa_auditor") || ""),
       rtoCode: "", rtoOther: "", compliant: false,
-      people: {}, results: {}, coaching: "", coachingByPerson: {}, coachingDate: "", overrides: {}, reason: "",
+      people: {}, extraPeople: {}, results: {}, coaching: "", coachingByPerson: {}, coachingDate: "", overrides: {}, reason: "",
     };
     if (existing) {
       const e = existing;
       Object.assign(draft, {
         auditType: e.auditType, stage: e.stage, fileRef: e.fileRef || "", receivedDate: e.receivedDate || "", completeDate: e.completeDate || "", sentDate: e.sentDate || "", date: e.date || today(),
         auditor: e.auditor || draft.auditor, rtoCode: e.rtoCode || (e.rto ? "other" : ""), rtoOther: e.rtoCode ? "" : (e.rto || ""), compliant: !!e.compliant,
-        people: { ...(e.people || {}) }, coaching: e.coaching || "", coachingByPerson: { ...(e.coachingByPerson || {}) }, coachingDate: e.coachingDate || "", overrides: { ...(e.overrides || {}) },
+        people: { ...(e.people || {}) }, extraPeople: Object.fromEntries(Object.entries(e.extraPeople || {}).map(([k, v]) => [k, [...v]])), coaching: e.coaching || "", coachingByPerson: { ...(e.coachingByPerson || {}) }, coachingDate: e.coachingDate || "", overrides: Object.fromEntries(Object.entries(e.overrides || {}).map(([k, v]) => [k, Array.isArray(v) ? [...v] : [v]])),
         results: Object.fromEntries(Object.entries(e.results || {}).map(([k, v]) => [k, { result: v.result || null, note: v.note || "" }])),
       });
       const qcode = (e.qualification || "").split(" ")[0];
@@ -315,7 +326,18 @@
       return p;
     }
     draft.people = defaultPeople();
-    const whoOptions = (sel) => team.map(m => `<option value="${m.id}" ${sel === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("");
+    // Who did this check: one or more people. Shown as chips, with a small "+" dropdown to add another.
+    const whoWidget = (it, slotId) => {
+      const chosen = resolveOwners(it, compKey(draft.compliant), draft.people, draft.overrides);
+      const custom = overrideList(draft.overrides, it.id).length > 0;
+      const slotPeople = [draft.people[slotId], ...(draft.extraPeople[slotId] || [])].filter(Boolean);
+      const chips = chosen.map(id => { const m = memberById(id); const out = isOutside(id, slotId, draft.people, draft.extraPeople); return `<span class="who-chip ${out ? "out" : ""}" title="${out ? "Not listed on this part of the file" : ""}">${esc(m ? m.name : "Unknown")}${custom ? `<button type="button" class="chip-x" data-who-rm="${esc(id)}" aria-label="Remove">&times;</button>` : ` <span class="muted">(from part)</span>`}</span>`; }).join("");
+      const left = team.filter(m => !chosen.includes(m.id));
+      const o = (m, tag) => `<option value="${m.id}">${esc(m.name)}${tag}</option>`;
+      const onPart = left.filter(m => slotPeople.includes(m.id)), rest = left.filter(m => !slotPeople.includes(m.id));
+      const add = `<select class="who-add" title="Add a person to this check"><option value="">+ person</option>${onPart.map(m => o(m, " (on this part)")).join("")}${onPart.length && rest.length ? `<option disabled>- - -</option>` : ""}${rest.map(m => o(m, "")).join("")}</select>`;
+      return `<span class="who-wrap" data-who="${it.id}">${chips || `<span class="who-chip out">Unassigned</span>`}${add}${custom && chosen.length !== 1 || (custom && chosen[0] !== draft.people[slotId]) ? `<button type="button" class="link small" data-who-reset="${it.id}">reset</button>` : ""}</span>`;
+    };
 
     const levels = ["Compliant", "Less Compliant", "Non Compliant"];
     const active = ctx.master.rtos.filter(r => !r.archived);
@@ -384,7 +406,7 @@
     function fillPersonNotes() {
       const seen = new Set(); const rows = [];
       CRITERIA.slots.forEach(sl => { const id = draft.people[sl.id]; if (id && !seen.has(id) && $(`#people select[data-slot="${sl.id}"]`)) { seen.add(id); const m = memberById(id); if (m) rows.push(m); } });
-      scopeItems(draft.stage, draft.compliant, cancelled()).forEach(it => { const id = draft.overrides[it.id]; if (id && !seen.has(id)) { seen.add(id); const m = memberById(id); if (m) rows.push(m); } });
+      scopeItems(draft.stage, draft.compliant, cancelled()).forEach(it => overrideList(draft.overrides, it.id).forEach(id => { if (!seen.has(id)) { seen.add(id); const m = memberById(id); if (m) rows.push(m); } }));
       $("#person-notes").innerHTML = rows.length ? `<div class="people-title">Coaching per person</div><p class="muted small">Optional now; normally logged after coaching from the audit page. Each person's notes and commitment go on their own copy only.</p>` +
         rows.map(m => { const c = coachOf(draft, m.id); return `<div class="pn"><strong>${esc(m.name)}</strong><label>Coaching notes<textarea data-pnote="${esc(m.id)}" data-k="notes" rows="2" placeholder="What was discussed with ${esc(m.name.split(" ")[0])}.">${esc(c.notes)}</textarea></label><label>Commitment<textarea data-pnote="${esc(m.id)}" data-k="commitment" rows="2" placeholder="What ${esc(m.name.split(" ")[0])} agreed to change, by when.">${esc(c.commitment)}</textarea></label></div>`; }).join("") : "";
       $("#person-notes").querySelectorAll("textarea[data-pnote]").forEach(t => t.addEventListener("input", () => { const c = coachOf(draft, t.dataset.pnote); c[t.dataset.k] = t.value; draft.coachingByPerson[t.dataset.pnote] = c; }));
@@ -401,9 +423,24 @@
     function fillPeople() {
       const items = scopeItems(draft.stage, draft.compliant, cancelled());
       const slots = slotsInScope(items, compKey(draft.compliant));
-      $("#people").innerHTML = `<div class="people-title">Who handled this file</div><div class="people-grid">` +
-        slots.map(s => `<label>${esc(s.label)}<select data-slot="${s.id}"><option value="">Unassigned</option>${team.map(m => `<option value="${m.id}" ${draft.people[s.id] === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select></label>`).join("") + `</div>`;
-      $("#people").querySelectorAll("select[data-slot]").forEach(sel => sel.addEventListener("change", () => { draft.people[sel.dataset.slot] = sel.value; fillPersonNotes(); renderItems(); }));
+      const opts = (sel) => `<option value="">Unassigned</option>` + team.map(m => `<option value="${m.id}" ${sel === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("");
+      $("#people").innerHTML = `<div class="people-title">Who handled this file</div><p class="muted small">One person per part is the usual case. If two people worked on a part, add the second one here and use the "who did this" dropdown on the checks they did.</p><div class="people-grid">` +
+        slots.map(s => `<div class="slot-box"><label>${esc(s.label)}<select data-slot="${s.id}">${opts(draft.people[s.id])}</select></label>` +
+          (draft.extraPeople[s.id] || []).map((id, i) => `<label class="extra">also<select data-slot="${s.id}" data-extra="${i}">${opts(id)}</select><button type="button" class="link small" data-remove-extra="${s.id}" data-i="${i}" title="Remove">remove</button></label>`).join("") +
+          `<button type="button" class="link small" data-add-extra="${s.id}">+ add another person</button></div>`).join("") + `</div>`;
+      $("#people").querySelectorAll("select[data-slot]").forEach(sel => sel.addEventListener("change", () => {
+        if (sel.dataset.extra !== undefined) { (draft.extraPeople[sel.dataset.slot] || (draft.extraPeople[sel.dataset.slot] = []))[Number(sel.dataset.extra)] = sel.value; }
+        else draft.people[sel.dataset.slot] = sel.value;
+        fillPersonNotes(); renderItems();
+      }));
+      $("#people").querySelectorAll("[data-add-extra]").forEach(b => b.addEventListener("click", () => { (draft.extraPeople[b.dataset.addExtra] || (draft.extraPeople[b.dataset.addExtra] = [])).push(""); fillPeople(); }));
+      $("#people").querySelectorAll("[data-remove-extra]").forEach(b => b.addEventListener("click", () => {
+        const sl = b.dataset.removeExtra, i = Number(b.dataset.i); const gone = (draft.extraPeople[sl] || [])[i];
+        draft.extraPeople[sl].splice(i, 1); if (!draft.extraPeople[sl].length) delete draft.extraPeople[sl];
+        // checks that were pointed at the removed person go back to the part's person
+        if (gone && !Object.values(draft.people).includes(gone) && !Object.values(draft.extraPeople).flat().includes(gone)) Object.keys(draft.overrides).forEach(id => { draft.overrides[id] = overrideList(draft.overrides, id).filter(x => x !== gone); if (!draft.overrides[id].length) delete draft.overrides[id]; });
+        fillPeople(); fillPersonNotes(); renderItems();
+      }));
       fillPersonNotes();
     }
     // Wait between Complete Portfolio and submission. Reached submission: complete -> sent. Still at
@@ -413,6 +450,17 @@
       if (!draft.completeDate || rank < 3) return null;
       if (draft.stage === "D") { const n = businessDays(draft.completeDate, draft.date); return n === null ? null : { days: n, over: n > CONFIG.SUBMIT_WITHIN_BUSINESS_DAYS, label: "at Complete Portfolio, not yet sent" }; }
       if (rank >= 4 && draft.sentDate) { const n = businessDays(draft.completeDate, draft.sentDate); return n === null ? null : { days: n, over: n > CONFIG.SUBMIT_WITHIN_BUSINESS_DAYS, label: "from complete to sent to RTO" }; }
+      return null;
+    }
+    // File received -> sent to the RTO (or -> audit date while not yet sent), against the target for
+    // this file type (CEO standards: 2 business days generic, 10 for compliant colleges).
+    function receiptWait() {
+      const rank = (stageByLetter(draft.stage) || {}).rank || 0;
+      if (!draft.receivedDate || rank < 2) return null;
+      const target = (CONFIG.RECEIPT_TO_RTO_BUSINESS_DAYS || {})[compKey(draft.compliant)];
+      if (!target) return null;
+      if (rank >= 4 && draft.sentDate) { const n = businessDays(draft.receivedDate, draft.sentDate); return n === null ? null : { days: n, over: n > target, target, label: "from file received to sent to RTO" }; }
+      if (rank < 4) { const n = businessDays(draft.receivedDate, draft.date); return n === null ? null : { days: n, over: n > target, target, label: "since file received, not yet sent to RTO" }; }
       return null;
     }
     function fillDateVisibility() {
@@ -428,6 +476,8 @@
       if (q) bits.push(`<span><b>${esc(q.code)}</b> ${esc(q.title)}</span>`, `<span><b>Entry requirement</b> ${esc(q.entry || "-")}</span>`);
       const d = daysBetween(draft.receivedDate, draft.date);
       if (d !== null) bits.push(`<span><b>${d} days</b> from file received to audit</span>`);
+      const rw = receiptWait();
+      if (rw) bits.push(`<span class="${rw.over ? "fact-warn" : ""}"><b>${rw.days} business day${rw.days === 1 ? "" : "s"}</b> ${rw.label} (target: ${rw.target})</span>`);
       const sw = submitWait();
       if (sw) bits.push(`<span class="${sw.over ? "fact-warn" : ""}"><b>${sw.days} business day${sw.days === 1 ? "" : "s"}</b> ${sw.label} (allowed: ${CONFIG.SUBMIT_WITHIN_BUSINESS_DAYS})</span>`);
       $("#file-facts").innerHTML = bits.filter(Boolean).join("");
@@ -440,7 +490,7 @@
         ${draft.compliant ? `<div class="remind college"><strong>${esc(title)}: process notes</strong>${notes.length ? `<ul>${notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : `<p class="muted small">No notes recorded for this college yet. Add them in functions/api/college-notes.js, keyed by RTO code.</p>`}</div>` : ""}
         <div class="remind"><strong>Follow-up cadence, ${esc(compLabel(draft.compliant).toLowerCase())}</strong><ul>${(CONFIG.CADENCE[ck] || []).map(c => `<li>${esc(c)}</li>`).join("")}</ul></div>`;
     }
-    const refreshTrack = () => { draft.people = {}; draft.people = defaultPeople(); fillPeople(); fillReminders(); renderItems(); };
+    const refreshTrack = () => { draft.people = {}; draft.people = defaultPeople(); fillPeople(); fillReminders(); fillFacts(); renderItems(); };
 
     $("#audit-form").querySelectorAll("[data-type]").forEach(b => b.addEventListener("click", () => {
       draft.auditType = b.dataset.type;
@@ -480,13 +530,16 @@
         if (it.phase !== lastPhase) { const ph = phaseById(it.phase); html += `<h3 class="phase">${esc(ph.title)} <span class="muted">${esc(ph.sop)}</span></h3>`; lastPhase = it.phase; }
         n++;
         const r = draft.results[it.id] || { result: null, note: "" };
-        const slot = slotById(ownerOf(it, ck)); const slotPerson = draft.people[slot.id] || ""; const ov = draft.overrides[it.id] || "";
+        const slot = slotById(ownerOf(it, ck));
+        const owners = resolveOwners(it, ck, draft.people, draft.overrides);
+        const outside = owners.some(id => isOutside(id, slot.id, draft.people, draft.extraPeople));   // someone not listed on this part
+        const shared = owners.length > 1;
         html += `
-          <div class="item ${r.result === "fail" ? "is-fail" : ""} ${ov ? "is-reassigned" : ""}" data-id="${it.id}">
+          <div class="item ${r.result === "fail" ? "is-fail" : ""} ${outside ? "is-reassigned" : ""}" data-id="${it.id}">
             <div class="item-n">${n}</div>
             <div class="item-body">
               <p>${esc(it.text)}</p>
-              <div class="item-meta"><span class="who">${esc(slot.label)}:</span><select class="who-sel" data-who="${it.id}" title="Who did this on this file"><option value="">${esc(slotPerson ? (memberById(slotPerson) || {}).name || "Unassigned" : "Unassigned")} (from part)</option>${whoOptions(ov)}</select>${ov ? `<span class="reassigned">reassigned</span>` : ""}<span class="ref">${esc(it.ref)}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</div>
+              <div class="item-meta"><span class="who">${esc(slot.label)}:</span>${whoWidget(it, slot.id)}${shared ? `<span class="shared">shared</span>` : ""}${outside ? `<span class="reassigned">reassigned</span>` : ""}<span class="ref">${esc(it.ref)}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</div>
               <textarea class="note" placeholder="Notes / evidence (required for a Fail)" rows="1">${esc(r.note)}</textarea>
             </div>
             <div class="seg" role="group" aria-label="Result for check ${n}">
@@ -506,8 +559,11 @@
           row.classList.toggle("is-fail", cur.result === "fail");
           refreshPanel();
         }));
-        const who = row.querySelector(".who-sel");
-        who.addEventListener("change", () => { if (who.value) draft.overrides[id] = who.value; else delete draft.overrides[id]; fillPersonNotes(); renderItems(); });
+        const slotId = ownerOf(itemById(id), ck);
+        const current = () => resolveOwners(itemById(id), ck, draft.people, draft.overrides);
+        row.querySelector(".who-add").addEventListener("change", (e) => { if (!e.target.value) return; draft.overrides[id] = [...current(), e.target.value]; fillPersonNotes(); renderItems(); });
+        row.querySelectorAll("[data-who-rm]").forEach(b => b.addEventListener("click", () => { const next = current().filter(x => x !== b.dataset.whoRm); if (next.length) draft.overrides[id] = next; else delete draft.overrides[id]; fillPersonNotes(); renderItems(); }));
+        const reset = row.querySelector("[data-who-reset]"); if (reset) reset.addEventListener("click", () => { delete draft.overrides[id]; fillPersonNotes(); renderItems(); });
         const note = row.querySelector(".note");
         const grow = () => { note.style.height = "auto"; note.style.height = note.scrollHeight + "px"; };
         note.addEventListener("input", () => { (draft.results[id] || (draft.results[id] = { result: null, note: "" })).note = note.value; grow(); refreshPanel(); });
@@ -519,7 +575,7 @@
     const panel = $("#result-panel");
     function refreshPanel() {
       const items = scopeItems(draft.stage, draft.compliant, cancelled());
-      const s = computeSummary(items, draft.results, draft.compliant, draft.people, draft.overrides);
+      const s = computeSummary(items, draft.results, draft.compliant, draft.people, draft.overrides, draft.extraPeople);
       const missingNotes = items.some(it => draft.results[it.id]?.result === "fail" && !(draft.results[it.id].note || "").trim());
       const unassigned = s.byPerson.some(p => !p.memberId);
       const noRto = !rto() && !draft.rtoOther.trim();
@@ -566,8 +622,8 @@
       const ck = compKey(draft.compliant);
       const peopleNames = {}; Object.keys(draft.people).forEach(k => { const m = memberById(draft.people[k]); if (m) peopleNames[k] = m.name; });
       const r = rto(); const q = qualByCode(draft.qualification);
-      const ownerName = (it) => { const id = resolveOwner(it, ck, draft.people, draft.overrides); const m = id ? memberById(id) : null; return { memberId: id || "", memberName: m ? m.name : "" }; };
-      const involved = new Set([...Object.values(draft.people), ...Object.values(draft.overrides)]);
+      const ownerName = (it) => { const ids = resolveOwners(it, ck, draft.people, draft.overrides); const names = ids.map(id => (memberById(id) || {}).name || "").filter(Boolean); return { memberId: ids[0] || "", memberName: names[0] || "", memberIds: ids, memberNames: names.join(", ") }; };
+      const involved = new Set([...Object.values(draft.people), ...Object.values(draft.extraPeople).flat(), ...Object.values(draft.overrides).flat()]);
       const audit = {
         id: existing ? existing.id : uid("QA"), type: "audit", status,
         auditType: draft.auditType, stage: draft.stage, stageName: stageByLetter(draft.stage).name,
@@ -576,16 +632,19 @@
         receivedDate: draft.receivedDate, date: draft.date, daysInPipeline: daysBetween(draft.receivedDate, draft.date),
         completeDate: draft.completeDate || "", sentDate: draft.sentDate || "",
         submitWait: (() => { const w = submitWait(); return w ? { businessDays: w.days, over: w.over, label: w.label, allowed: CONFIG.SUBMIT_WITHIN_BUSINESS_DAYS } : null; })(),
+        receiptWait: (() => { const w = receiptWait(); return w ? { businessDays: w.days, over: w.over, label: w.label, target: w.target } : null; })(),
         auditor: draft.auditor.trim(),
         rto: rtoName(), rtoCode: r ? r.code : "", complianceLevel: r ? r.level : "", processTo: r ? r.processTo : "",
         compliant: draft.compliant,
         people: Object.fromEntries(slotsInScope(items, ck).map(s => [s.id, draft.people[s.id] || ""])), peopleNames,
+        extraPeople: Object.fromEntries(slotsInScope(items, ck).map(s => [s.id, (draft.extraPeople[s.id] || []).filter(Boolean)]).filter(([, v]) => v.length)),
+        extraPeopleNames: Object.fromEntries(Object.values(draft.extraPeople).flat().filter(Boolean).map(id => [id, (memberById(id) || {}).name || ""])),
         itemIds: items.map(it => it.id),
         results: Object.fromEntries(items.map(it => [it.id, { result: draft.results[it.id]?.result || null, note: (draft.results[it.id]?.note || "").trim(), owner: ownerOf(it, ck), ...ownerName(it) }])),
-        overrides: Object.fromEntries(Object.entries(draft.overrides).filter(([id]) => items.some(it => it.id === id))),
+        overrides: Object.fromEntries(Object.entries(draft.overrides).filter(([id, v]) => items.some(it => it.id === id) && overrideList(draft.overrides, id).length).map(([id]) => [id, overrideList(draft.overrides, id)])),
         coaching: draft.coaching.trim(), coachingDate: draft.coachingDate || "",
         coachingByPerson: Object.fromEntries(Object.keys(draft.coachingByPerson).filter(id => involved.has(id)).map(id => [id, { notes: coachOf(draft, id).notes.trim(), commitment: coachOf(draft, id).commitment.trim() }]).filter(([, c]) => c.notes || c.commitment)),
-        summary: computeSummary(items, draft.results, draft.compliant, draft.people, draft.overrides),
+        summary: computeSummary(items, draft.results, draft.compliant, draft.people, draft.overrides, draft.extraPeople),
         criteriaVersion: CRITERIA.version, createdAt: existing ? existing.createdAt : new Date().toISOString(),
       };
       if (existing) { ["loggedBy", "loggedAt", "changeLog", "pending"].forEach(k => { if (existing[k] !== undefined) audit[k] = existing[k]; }); if (locked) { audit.coaching = existing.coaching || ""; audit.coachingByPerson = existing.coachingByPerson || {}; audit.coachingDate = existing.coachingDate || ""; audit.auditor = existing.auditor || audit.auditor; } }
@@ -629,17 +688,18 @@
     if (!a) { view().innerHTML = `<p class="empty">Audit not found. <a href="#/">Back</a></p>`; return; }
     const s = a.summary, st = statusOf(a);
     let html = "", lastPhase = null, n = 0;
-    a.itemIds.forEach(iid => {
+    inCriteriaOrder(a.itemIds).forEach(iid => {   // current section order, even for audits saved under an older layout
       const it = itemById(iid); if (!it) return;
       if (it.phase !== lastPhase) { const ph = phaseById(it.phase); html += `<h3 class="phase">${esc(ph.title)} <span class="muted">${esc(ph.sop)}</span></h3>`; lastPhase = it.phase; }
       n++;
-      const r = a.results[iid] || {}; const slot = slotById(r.owner); const whoName = r.memberName || a.peopleNames[r.owner] || "";
+      const r = a.results[iid] || {}; const slot = slotById(r.owner); const whoName = r.memberNames || r.memberName || a.peopleNames[r.owner] || "";
+      const ids = r.memberIds || (r.memberId ? [r.memberId] : []); const out = ids.some(id => isOutside(id, r.owner, a.people, a.extraPeople));
       html += `
         <div class="item ${r.result === "fail" ? "is-fail" : ""}">
           <div class="item-n">${n}</div>
           <div class="item-body">
             <p>${esc(it.text)}</p>
-            <div class="item-meta"><span class="who">${esc(slot?.label || "")}${whoName ? ": " + esc(whoName) : ""}</span>${a.overrides && a.overrides[iid] ? `<span class="reassigned">reassigned</span>` : ""}<span class="ref">${esc(it.ref)}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</div>
+            <div class="item-meta"><span class="who">${esc(slot?.label || "")}${whoName ? ": " + esc(whoName) : ""}</span>${ids.length > 1 ? `<span class="shared">shared</span>` : ""}${out ? `<span class="reassigned">reassigned</span>` : ""}<span class="ref">${esc(it.ref)}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</div>
             ${r.note ? `<p class="note-ro">${esc(r.note)}</p>` : ""}
           </div>
           <div class="seg"><span class="pill ${esc(r.result || "none")}">${r.result === "pass" ? "Pass" : r.result === "fail" ? "Fail" : r.result === "na" ? "N/A" : "-"}</span></div>
@@ -661,7 +721,7 @@
       <nav class="crumbs"><a href="#/">Team</a> / ${esc(a.id)}</nav>
       <section class="hero">
         <div><h1>${esc(a.fileRef || "Audit")} ${statusChip(a)}</h1>
-          <p class="muted">${esc(auditLabel(a))}. ${esc(a.rto || "RTO not recorded")}${a.rtoCode ? " (" + esc(a.rtoCode) + ")" : ""}${a.complianceLevel ? ", " + esc(a.complianceLevel) : ""}, ${esc(compLabel(a.compliant).toLowerCase())}${a.qualification ? ". " + esc(a.qualification) : ""}. Received ${fmtDate(a.receivedDate)}, audited ${fmtDate(a.date)}${a.daysInPipeline !== null ? " (" + a.daysInPipeline + " days)" : ""} by ${esc(a.auditor || "-")}.${a.submitWait ? ` <span class="${a.submitWait.over ? "warn" : ""}">${a.submitWait.businessDays} business days ${esc(a.submitWait.label)} (allowed ${a.submitWait.allowed}).</span>` : ""}</p></div>
+          <p class="muted">${esc(auditLabel(a))}. ${esc(a.rto || "RTO not recorded")}${a.rtoCode ? " (" + esc(a.rtoCode) + ")" : ""}${a.complianceLevel ? ", " + esc(a.complianceLevel) : ""}, ${esc(compLabel(a.compliant).toLowerCase())}${a.qualification ? ". " + esc(a.qualification) : ""}. Received ${fmtDate(a.receivedDate)}, audited ${fmtDate(a.date)}${a.daysInPipeline !== null ? " (" + a.daysInPipeline + " days)" : ""} by ${esc(a.auditor || "-")}.${a.receiptWait ? ` <span class="${a.receiptWait.over ? "warn" : ""}">${a.receiptWait.businessDays} business days ${esc(a.receiptWait.label)} (target ${a.receiptWait.target}).</span>` : ""}${a.submitWait ? ` <span class="${a.submitWait.over ? "warn" : ""}">${a.submitWait.businessDays} business days ${esc(a.submitWait.label)} (allowed ${a.submitWait.allowed}).</span>` : ""}</p></div>
         <div class="hero-actions">${actions.join("")}</div>
       </section>
       ${pend ? `<section class="pending ${can.admin ? "" : "ro"}">
@@ -796,7 +856,7 @@
   }
 
   // ---- roles (admin+) ---------------------------------------------------
-  const SLOT_LABELS = { intake: "Intake", drafting: "Drafting", review: "Review and submission (generic files)", compliant: "Review and submission (compliant-college files)", lead: "Admin Lead decisions", posting: "Posting", cancel: "Cancellation", none: "Nothing (not prefilled)" };
+  const SLOT_LABELS = { intake: "Intake", drafting: "Drafting", review: "Review and submission (generic files)", compliant: "Review and submission (compliant-college files)", lead: "Admin Lead decisions", accounts: "Accounts (bookkeeper)", posting: "Posting", cancel: "Cancellation", none: "Nothing (not prefilled)" };
   function renderRoles() {
     if (!can.admin) { view().innerHTML = `<p class="empty">Only an admin can manage roles. <a href="#/">Back</a></p>`; return; }
     const inUse = (name) => records.filter(r => r.type === "member" && rolesOf(r).includes(name)).length;
@@ -810,13 +870,14 @@
       </form>
       <div class="table-wrap"><table class="list">
         <thead><tr><th>Role</th><th>Prefills</th><th>People</th><th></th></tr></thead>
-        <tbody>${Storage.roles.map((r, i) => `<tr>
-          <td>${esc(r.name)}</td>
+        <tbody>${Storage.roles.map((r, i) => `<tr data-row="${i}">
+          <td><span class="r-view">${esc(r.name)}</span><input class="r-edit" data-redit="${i}" type="text" value="${esc(r.name)}" hidden></td>
           <td><select data-rslot="${i}">${Object.entries(SLOT_LABELS).map(([k, v]) => `<option value="${k}" ${k === r.slot ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></td>
           <td>${inUse(r.name)}</td>
-          <td class="row-actions"><button class="link" data-rrename="${i}">Rename</button>${inUse(r.name) ? "" : ` <button class="link danger-link" data-rdel="${i}">Delete</button>`}</td>
+          <td class="row-actions"><span class="r-view"><button class="link" data-rrename="${i}">Edit name</button> <button class="link danger-link" data-rdel="${i}">Delete</button></span><span class="r-edit" hidden><button class="link" data-rsave="${i}">Save</button> <button class="link" data-rcancel="${i}">Cancel</button></span></td>
         </tr>`).join("")}</tbody>
-      </table></div>`;
+      </table></div>
+      <p class="muted small">Editing a name changes it on everyone who holds the role. Deleting a role removes it from everyone who holds it; their audits are not affected.</p>`;
     const save = async (next, msg) => { try { await Storage.setRoles(next); setStatus(msg, "ok"); renderRoles(); } catch (err) { setStatus(err.message, "err"); renderRoles(); } };
     $("#role-form").addEventListener("submit", (e) => {
       e.preventDefault();
@@ -825,17 +886,34 @@
       save([...Storage.roles, { name, slot: $("#r-slot").value }], "Role added.");
     });
     view().querySelectorAll("[data-rslot]").forEach(sel => sel.addEventListener("change", () => { const next = Storage.roles.map((r, i) => i === Number(sel.dataset.rslot) ? { ...r, slot: sel.value } : r); save(next, "Updated."); }));
-    view().querySelectorAll("[data-rrename]").forEach(b => b.addEventListener("click", async () => {
-      const i = Number(b.dataset.rrename); const old = Storage.roles[i].name;
-      const name = prompt("New role name", old); if (!name || !name.trim() || name.trim() === old) return;
-      // rename on every member that holds it
+    // rename on the row itself, then on every member who holds the role
+    const rowOf = (i) => view().querySelector(`tr[data-row="${i}"]`);
+    const toggle = (i, editing) => { const row = rowOf(i); row.querySelectorAll(".r-view").forEach(x => x.hidden = editing); row.querySelectorAll(".r-edit").forEach(x => x.hidden = !editing); if (editing) { const inp = row.querySelector("input[data-redit]"); inp.focus(); inp.select(); } };
+    const commit = async (i) => {
+      const old = Storage.roles[i].name; const name = rowOf(i).querySelector("input[data-redit]").value.trim();
+      if (!name || name === old) { toggle(i, false); return; }
+      if (Storage.roles.some((r, j) => j !== i && r.name.toLowerCase() === name.toLowerCase())) { setStatus("Another role already has that name.", "err"); return; }
       const members = records.filter(r => r.type === "member" && rolesOf(r).includes(old));
       try {
-        for (const m of members) { const next = { ...m, roles: rolesOf(m).map(x => x === old ? name.trim() : x) }; delete next.role; await Storage.save(next); m.roles = next.roles; delete m.role; }
-        await save(Storage.roles.map((r, j) => j === i ? { ...r, name: name.trim() } : r), "Renamed on " + members.length + " people.");
+        for (const m of members) { const next = { ...m, roles: rolesOf(m).map(x => x === old ? name : x) }; delete next.role; await Storage.save(next); m.roles = next.roles; delete m.role; }
+        await save(Storage.roles.map((r, j) => j === i ? { ...r, name } : r), members.length ? "Renamed on " + members.length + " " + (members.length === 1 ? "person" : "people") + "." : "Renamed.");
+      } catch (err) { setStatus(err.message, "err"); }
+    };
+    view().querySelectorAll("[data-rrename]").forEach(b => b.addEventListener("click", () => toggle(Number(b.dataset.rrename), true)));
+    view().querySelectorAll("[data-rcancel]").forEach(b => b.addEventListener("click", () => toggle(Number(b.dataset.rcancel), false)));
+    view().querySelectorAll("[data-rsave]").forEach(b => b.addEventListener("click", () => commit(Number(b.dataset.rsave))));
+    view().querySelectorAll("input[data-redit]").forEach(inp => inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commit(Number(inp.dataset.redit)); } if (e.key === "Escape") toggle(Number(inp.dataset.redit), false); }));
+    // delete: also take the role off everyone who holds it
+    view().querySelectorAll("[data-rdel]").forEach(b => b.addEventListener("click", async () => {
+      const i = Number(b.dataset.rdel); const name = Storage.roles[i].name;
+      const members = records.filter(r => r.type === "member" && rolesOf(r).includes(name));
+      const msg = members.length ? `Delete the role "${name}"? It will be removed from ${members.length} ${members.length === 1 ? "person" : "people"} (${members.map(m => m.name).join(", ")}). Their audits are not affected.` : `Delete the role "${name}"?`;
+      if (!confirm(msg)) return;
+      try {
+        for (const m of members) { const next = { ...m, roles: rolesOf(m).filter(x => x !== name) }; delete next.role; await Storage.save(next); m.roles = next.roles; delete m.role; }
+        await save(Storage.roles.filter((r, j) => j !== i), members.length ? "Role deleted and removed from " + members.length + " " + (members.length === 1 ? "person" : "people") + "." : "Role deleted.");
       } catch (err) { setStatus(err.message, "err"); }
     }));
-    view().querySelectorAll("[data-rdel]").forEach(b => b.addEventListener("click", () => { if (confirm("Delete this role?")) save(Storage.roles.filter((r, i) => i !== Number(b.dataset.rdel)), "Role deleted."); }));
   }
 
   // ---- logins (owner) ---------------------------------------------------

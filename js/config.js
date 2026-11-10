@@ -17,6 +17,7 @@ const CONFIG = {
     { name: "Drafting Admin 1", roles: ["Drafting Admin"] },
     { name: "Compliant Colleges Admin 1", roles: ["Compliant Colleges Admin", "Drafting Admin"] },
     { name: "Admin Lead", roles: ["Admin Lead"] },
+    { name: "Bookkeeper", roles: ["Bookkeeper"] },
     { name: "BD Manager", roles: ["BD Manager"] },
   ],
 
@@ -31,26 +32,29 @@ const CONFIG = {
     "Non Compliant": "noncompliant",
   },
 
-  // Follow-up cadence reminders, shown above the checklist. RTO follow-up differs by college type:
-  // compliant RTOs every 5 business days, less and non-compliant every 2 (Rikuo, Oct 2026).
+  // Follow-up cadence reminders, shown above the checklist. RTO follow-up differs by college type
+  // (CEO standards, Nov 2026): every 2 days for less and non-compliant RTOs, every 7 days for compliant.
   CADENCE: {
     compliant: [
-      "Missing documents: every 1 to 2 business days (2.1.1). Escalate after 5 business days with no reply.",
-      "Outstanding invoice: on the due date, then 2 days later (2.1.2). Escalate when more than a week overdue.",
+      "Missing documents: the full list in one email (two at most) the first time, then every 1 to 2 business days (2.1.1). Escalate to the BD Manager after 5 days with no movement.",
+      "Forms: pre-filled and sent within 2 days of opportunity creation; RPL kit within 10 days.",
+      "Outstanding invoice: weekly follow-up on every due payment, individual or bulk (2.1.2).",
       "Signed forms: every 2 business days (2.1.1, listing the forms). Escalate after 5 business days.",
-      "RTO follow-up: every 5 business days (4.1).",
+      "RTO follow-up: every 7 days (4.1). Target: portfolio at the RTO within 2 weeks of receipt.",
     ],
     noncompliant: [
-      "Missing documents: lighter than compliant. Confirm the cadence and record it here.",
-      "Outstanding invoice: on the due date, then 2 days later (2.1.2). Escalate when more than a week overdue.",
+      "Missing documents: bare minimum only, asked for in one straightforward email. Escalate to the BD Manager after 5 days with no movement.",
+      "Outstanding invoice: weekly follow-up on every due payment, individual or bulk (2.1.2).",
       "Signed forms: every 2 business days (2.1.1, listing the forms). Escalate after 5 business days.",
-      "RTO follow-up: every 2 business days (4.1).",
+      "RTO follow-up: every 2 days (4.1). Target: portfolio at the RTO within 2 days of receipt.",
     ],
   },
 
-  // How long a complete, paid portfolio may wait before it goes to the RTO. Agents are invoiced
-  // weekly, so a complete file should not sit longer than that. Business days (Mon to Fri).
-  SUBMIT_WITHIN_BUSINESS_DAYS: 5,   // CONFIRM
+  // Timing targets (CEO standards, Nov 2026), business days (Mon to Fri). Shown in the file facts
+  // and used by checks SU-06, CP-01 and SU-07.
+  SUBMIT_WITHIN_BUSINESS_DAYS: 1,                       // complete and paid -> sent to the RTO
+  RECEIPT_TO_RTO_BUSINESS_DAYS: { noncompliant: 2, compliant: 10 },   // file received -> sent to the RTO
+  INVOICE_WITHIN_WORKING_HOURS: 6,                      // RTO and amount assigned -> invoice sent (IV-05)
 
   // Suggested sampling, shown on the home page. Text only.
   cadence: [
