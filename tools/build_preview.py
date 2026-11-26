@@ -14,7 +14,7 @@ html = html.replace('src="assets/logo-h-w.png"', 'src="%s"' % b64("assets/logo-h
 js = "\n// ---- preview only: internal data inlined so the preview works without a server ----\n"
 js += rd("functions/api/master-data.js").replace("export const", "const") + "\n"
 js += rd("functions/api/college-notes.js").replace("export const", "const") + "\n"
-for f in ["config", "criteria", "logo", "storage", "pdf", "theme", "app"]:
+for f in ["config", "criteria", "logo", "storage", "pdf", "theme", "combo", "app"]:
     js += "\n// ---- %s.js ----\n" % f + rd("js/%s.js" % f) + "\n"
 scripts = re.search(r'  <!-- app -->\n(?:  <script src="js/[a-z]+\.js"></script>\n)+', html).group(0)
 html = html.replace(scripts, "  <script>\n" + js + "  </script>\n")
