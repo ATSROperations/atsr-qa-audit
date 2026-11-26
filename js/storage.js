@@ -39,11 +39,18 @@ const Storage = (() => {
     try { localStorage.setItem(KEY + "_roles_seeded", JSON.stringify([...new Set([...seededSet, ...DEFAULT_ROLES.map(d => d.slot)])])); if (missing.length) localStorage.setItem(KEY + "_roles", JSON.stringify(roles)); } catch (e) {}
     return roles;
   };
+  // RTO and qualification lists in local mode: the Master File (MASTER) plus additions/edits kept in this browser.
+  const BASE_MASTER = () => typeof MASTER !== "undefined" ? MASTER : { rtos: [], qualifications: [] };
+  const readCustom = () => { try { return JSON.parse(localStorage.getItem(KEY + "_master_custom")) || { rtos: [], qualifications: [] }; } catch (e) { return { rtos: [], qualifications: [] }; } };
+  const mergeMaster = (c) => {
+    const m = (base, extra) => { const map = new Map(); base.forEach(x => { if (!map.has(x.code)) map.set(x.code, { ...x }); }); (extra || []).forEach(x => map.set(x.code, { ...(map.get(x.code) || {}), ...x })); return [...map.values()]; };
+    return { rtos: m(BASE_MASTER().rtos, c.rtos), qualifications: m(BASE_MASTER().qualifications, c.qualifications) };
+  };
   const local = {
     async init() {
       roles = readRoles();
       return { state: "ready", me, roles, records: readLocal(),
-        master: typeof MASTER !== "undefined" ? MASTER : { rtos: [], qualifications: [] },
+        master: mergeMaster(readCustom()), masterCustom: readCustom(),
         collegeNotes: typeof COLLEGE_NOTES !== "undefined" ? COLLEGE_NOTES : {} };
     },
     async save(record) { const r = readLocal().filter(x => x.id !== record.id); r.push(record); writeLocal(r); return record; },
@@ -52,6 +59,17 @@ const Storage = (() => {
     async remove(id) { writeLocal(readLocal().filter(r => r.id !== id)); return true; },
     async replaceAll(records) { writeLocal(records); return true; },
     async setRoles(next) { roles = next; localStorage.setItem(KEY + "_roles", JSON.stringify(next)); return next; },
+    async saveListItem(kind, code, data, isNew) {
+      const c = readCustom(); c[kind] = c[kind] || [];
+      const inMaster = BASE_MASTER()[kind].some(x => x.code === code);
+      if (isNew && (inMaster || c[kind].some(x => x.code === code))) throw new Error(code + " is already in the list. Use Edit on it.");
+      c[kind] = [...c[kind].filter(x => x.code !== code), { ...data, code, source: inMaster ? "edited" : "added", by: "local", at: new Date().toISOString() }];
+      localStorage.setItem(KEY + "_master_custom", JSON.stringify(c)); return { master: mergeMaster(c), custom: c };
+    },
+    async removeListItem(kind, code) {
+      const c = readCustom(); c[kind] = (c[kind] || []).filter(x => x.code !== code);
+      localStorage.setItem(KEY + "_master_custom", JSON.stringify(c)); return { master: mergeMaster(c), custom: c };
+    },
     async login() { throw new Error("No sign-in in local mode."); },
     async logout() { return true; },
     async changePassword() { throw new Error("No passwords in local mode."); },
@@ -93,6 +111,8 @@ const Storage = (() => {
     async remove(id) { await api("records/" + encodeURIComponent(id), { method: "DELETE" }); return true; },
     async replaceAll() { throw new Error("Import is only available in a local copy."); },
     async setRoles(next) { roles = await api("roles", { method: "PUT", body: JSON.stringify({ roles: next }) }); return roles; },
+    async saveListItem(kind, code, data, isNew) { return api("master/" + kind + "/" + encodeURIComponent(code), { method: "PUT", body: JSON.stringify({ ...data, isNew: !!isNew }) }); },
+    async removeListItem(kind, code) { return api("master/" + kind + "/" + encodeURIComponent(code), { method: "DELETE" }); },
     async listUsers() { return api("users"); },
     async fullExport() { return api("export"); },
     async createUser(u) { return api("users", { method: "POST", body: JSON.stringify(u) }); },
