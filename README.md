@@ -78,7 +78,7 @@ Free tier limits (5 GB, millions of reads a day) are far above what this app use
 
 1. Pick the audit type. Completed: the file is at Posted or Soft Copy Received. Ongoing: any earlier stage, including On Hold. Cancelled: pick the last stage the file reached before it was cancelled.
 2. Fill in the file: stage, file reference, qualification (type the code, the title and entry requirement appear), file received date, audit date, RTO. The RTO list comes from the Master File, grouped by compliance level, with archived RTOs at the bottom. Picking the RTO shows its compliance level, Process To and type, and sets the checklist track.
-3. Assign who handled each part of the file. Roles prefill this; change it if someone else did the work. Only the parts in scope are shown. If two people worked on a part (two drafters, say), use "+ add another person" under that part, then pick them on the checks they did with the "who did this" dropdown; both get their own score and their own PDF copy. Each check also shows who is answerable for it as a chip ("from part" means it follows the part above). Use the "+ person" dropdown on the check to add anyone, including a second or third person when a check was shared; a shared check counts in every one of their scores and appears on each of their PDF copies. Remove a chip with its x, or press reset to go back to the part's person. A person not listed on that part shows "reassigned".
+3. Assign who handled each part of the file. Roles prefill this; change it if someone else did the work. Only the parts in scope are shown. If two people worked on a part (two drafters, say), use "+ add another person" under that part, then pick them on the checks they did with the "who did this" dropdown; both get their own score and their own PDF copy. Each check starts with its role (the part of the file it belongs to). Change it on that check if, on this file, the task sat with another role: the check then goes to that part's person straight away, shows "role changed", and the change is logged on edits. Next to it, each check shows who is answerable for it as a chip ("from part" means it follows the part above). Use the "+ person" dropdown on the check to add anyone, including a second or third person when a check was shared; a shared check counts in every one of their scores and appears on each of their PDF copies. Remove a chip with its x, or press reset to go back to the part's person. A person not listed on that part shows "reassigned".
 4. Score each check Pass, Fail or N/A. A Fail needs a note. On cancelled files, use N/A for steps that never happened.
 5. Save scores (locks the scores) or Save, still in progress (keeps everything open; needs only a file reference). Then download the **File PDF** (everything, for the auditor and lead) or **Their copy** for each person (only their checks and score, the file result stated neutrally, and their own coaching notes and commitment) and send it ahead of the coaching.
 6. After coaching, open the audit and press Log coaching: coaching date, whole-file note, and for each person what was discussed and what they committed to. Tick "Coaching done" to mark the audit final. If something came up that should change a score, use Edit (admin, with a reason) or Request a change (auditor; an admin approves). The whole-file note never appears on a person's copy, so it can mention anyone.
@@ -93,10 +93,11 @@ What changes with the file:
 
 ## Updating RTOs and qualifications
 
-Two ways:
+In the app: **RTOs & quals** in the top bar. Admins and the owner can add an RTO or qualification, edit any row (name, compliance level, Process to, title, training package, entry requirements) and archive it; everyone else can view the lists. Added rows can be deleted; edited Master File rows can be reset to the Master File. On the audit form, admins also get "+ Add RTO" and "+ Add qualification" next to the fields: the new entry is saved to the list and selected on the spot. Auditors still have "Other (type it)" for anything missing.
 
-- Small change: edit the row in `functions/api/master-data.js` on GitHub (one RTO or qualification per line) and commit.
-- Master File changed a lot: run `python3 tools/build_master_data.py "ATSR Master File.xlsx"` from the project folder (needs `pip install openpyxl`), then commit the new `functions/api/master-data.js`.
+How it is stored: the Master File rows stay in `functions/api/master-data.js`. What is added or changed in the app is kept in the database (settings key `master_custom`) and laid over the Master File by code, so rebuilding `master-data.js` never wipes app changes. If the Master File repeats a code, the first row is used.
+
+To reload the whole Master File (big changes): run `python3 tools/build_master_data.py "ATSR Master File.xlsx"` from the project folder (needs `pip install openpyxl`), then commit the new `functions/api/master-data.js`. Once a row added in the app is also in the Master File, delete the app copy (or keep it: the app copy wins).
 
 College notes live in `functions/api/college-notes.js`, keyed by RTO code, so rebuilding the data never wipes them.
 
@@ -120,6 +121,10 @@ Everything is in `js/criteria.js`.
 ## PDF
 
 Download PDF on any audit produces a branded A4 PDF: file details, stage, RTO and college type, days from receipt to audit, file score and outcome, a per-person table, the findings grouped by phase with who was answerable and the notes, the coaching note, and the manual and checks version in the footer. File name `QA_<file>_<date>_<completed|ongoing>.pdf`. The PDF library loads from cdnjs; the rest of the app works offline.
+
+## Searchable dropdowns
+
+The RTO, qualification and person pickers, the role on each check, and any list with 8 or more choices are type-to-search boxes (`js/combo.js`): type any part of a name or code, in any order ("able 452", "carpentry cert III"), then Enter or click. Up/Down move, Esc closes. The real dropdown stays underneath, so the rest of the app is unchanged. Add `data-search` to a `<select>` to make it searchable, or `data-plain` to keep it plain.
 
 ## Brand, light and dark mode
 
