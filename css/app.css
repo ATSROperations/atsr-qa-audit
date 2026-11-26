@@ -401,3 +401,60 @@ ul.plain li::before { content: ""; position: absolute; left: 0; top: 7px; width:
 
 /* roles: inline name editing */
 .list input.r-edit { max-width: 260px; padding: 6px 12px; font-size: 14px; }
+
+/* ---- searchable dropdowns (js/combo.js) ---- */
+.combo { position: relative; display: block; width: 100%; }
+.combo.combo-inline { display: inline-block; width: auto; vertical-align: middle; }
+.combo .combo-native { position: absolute; left: 0; top: 0; width: 1px !important; height: 1px; opacity: 0; pointer-events: none; padding: 0; border: 0; }
+.combo .combo-input { width: 100%; padding-right: 34px; cursor: pointer; text-overflow: ellipsis;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235A6E6D' stroke-width='2.5' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 14px center; }
+.combo.is-open .combo-input { cursor: text; border-color: var(--focus); }
+.combo-inline .combo-input { padding: 3px 26px 3px 10px; font-size: 12px; background-position: right 9px center; min-width: 8ch; }
+.combo-who-add .combo-input { color: var(--accent-text); }
+.combo-part-sel .combo-input { font-weight: 600; color: var(--accent-text); background-color: var(--surface-2); border-color: transparent; }
+.combo-list { position: fixed; z-index: 1000; margin: 0; padding: 6px; list-style: none; overflow-y: auto; background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-icon); box-shadow: 0 10px 30px rgba(26, 77, 77, 0.18); font-size: 14px; }
+.combo-list li { padding: 7px 10px; border-radius: 8px; }
+.combo-opt { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.combo-opt.is-active { background: var(--surface-2); }
+.combo-opt.is-selected { font-weight: 600; color: var(--accent-text); }
+.combo-opt mark { background: var(--atsr-lime); color: #222328; border-radius: 3px; padding: 0 1px; }
+.combo-group { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding-top: 10px !important; }
+.combo-tag { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.combo-empty { color: var(--muted); }
+:root[data-theme="dark"] .combo-opt mark { background: rgba(208, 255, 113, 0.3); color: inherit; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .combo-opt mark { background: rgba(208, 255, 113, 0.3); color: inherit; } }
+.item-meta .combo-part-sel { margin-right: 4px; }
+
+/* ---- RTOs and qualifications page, quick add in the audit form ---- */
+.tabs { display: flex; gap: 6px; margin: 4px 0 16px; }
+.tab { padding: 8px 16px; border-radius: var(--radius-pill); border: 1px solid var(--line); color: var(--text); font-weight: 600; font-size: 14px; }
+.tab.on { background: var(--atsr-teal); border-color: var(--atsr-teal); color: #EBFFF6; }
+.tab.on .muted { color: rgba(235, 255, 246, 0.75); }
+:root[data-theme="dark"] .tab.on { background: var(--atsr-lime); border-color: var(--atsr-lime); color: #1A4D4D; }
+:root[data-theme="dark"] .tab.on .muted { color: #1A4D4D; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .tab.on { background: var(--atsr-lime); border-color: var(--atsr-lime); color: #1A4D4D; } :root:not([data-theme="light"]) .tab.on .muted { color: #1A4D4D; } }
+.li-form { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); padding: 6px 18px 16px; margin-bottom: 16px; box-shadow: var(--shadow-card); }
+.li-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; margin-bottom: 12px; }
+.li-grid label { display: block; font-size: 13px; color: var(--muted); }
+.li-grid label input, .li-grid label select, .li-grid label textarea { margin-top: 4px; color: var(--text); }
+.li-grid .li-wide { grid-column: span 2; }
+.li-grid .li-full { grid-column: 1 / -1; }
+.li-grid label.check { grid-column: 1 / -1; color: var(--text); }
+.li-search { margin: 0 0 10px; max-width: 520px; }
+.li-table td.mono { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.li-table tr.is-archived td { opacity: .6; }
+.chip.src-master { background: var(--surface-2); color: var(--muted); }
+.chip.src-added { background: var(--note-bg); color: var(--accent-text); border-color: var(--note-line); }
+.chip.src-edited { background: var(--coach-bg); color: var(--coach-fg); }
+.chip.src-archived { background: var(--none-bg); color: var(--none-fg); }
+.qa-panel { background: var(--surface-2); border-radius: var(--radius-inner); padding: 12px 14px; }
+.qa-panel .li-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.has-quick-add { position: relative; }
+.has-quick-add > label { display: block; }
+.quick-add { position: absolute; top: 0; right: 4px; font-size: 12px; }
+.btn.small-btn { padding: 7px 14px; font-size: 13px; }
+@media (max-width: 760px) { .li-grid { grid-template-columns: 1fr 1fr; } .li-grid .li-wide { grid-column: 1 / -1; } }
+label > .combo { margin-top: 4px; font-weight: 400; font-size: 14px; }
+.li-grid input[data-f="code"]::placeholder { text-transform: none; }
