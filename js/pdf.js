@@ -80,7 +80,7 @@ function pdfFindings(ctx, y, audit, itemIds, withOwner) {
       const slot = CRITERIA.slots.find(x => x.id === r.owner); const who = r.memberNames || r.memberName || (audit.peopleNames && audit.peopleNames[r.owner]) || "";
       const ids = r.memberIds || (r.memberId ? [r.memberId] : []);
       const out = ids.some(m => m !== (audit.people || {})[r.owner] && !((audit.extraPeople || {})[r.owner] || []).includes(m));
-      row.push((slot ? slot.label : "") + (who ? "\n" + who : "") + (ids.length > 1 ? "\n(shared)" : "") + (out ? "\n(reassigned)" : ""));
+      row.push((slot ? slot.label : "") + (who ? "\n" + who : "") + (audit.parts && audit.parts[id] ? "\n(role changed)" : "") + (ids.length > 1 ? "\n(shared)" : "") + (out ? "\n(reassigned)" : ""));
     }
     row.push(it.critical ? "Critical" : "Standard", pdfResult(r.result), r.note || "");
     body.push(row);
