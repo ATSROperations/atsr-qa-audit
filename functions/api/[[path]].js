@@ -59,7 +59,7 @@ const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(dat
 });
 const fail = (status, message) => json({ error: message }, status);
 // ---- audit rules (mirrored for local mode in js/app.js; keep the two in step)
-const LOCKED_FIELDS = ["auditType", "stage", "stageName", "fileRef", "qualification", "receivedDate", "date", "completeDate", "sentDate", "rto", "rtoCode", "complianceLevel", "processTo", "compliant", "people", "extraPeople", "extraPeopleNames", "overrides", "itemIds", "results"];
+const LOCKED_FIELDS = ["auditType", "stage", "stageName", "fileRef", "qualification", "receivedDate", "date", "completeDate", "sentDate", "rto", "rtoCode", "complianceLevel", "processTo", "compliant", "people", "extraPeople", "extraPeopleNames", "parts", "overrides", "itemIds", "results"];
 const COACH_FIELDS = ["coaching", "coachingByPerson", "coachingDate"];
 const canon = (v) => v && typeof v === "object" && !Array.isArray(v) ? "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}" : JSON.stringify(v === undefined ? null : v);
 const pick = (o, keys) => { const r = {}; keys.forEach(k => { if (o && o[k] !== undefined) r[k] = o[k]; }); return r; };
@@ -84,6 +84,7 @@ function auditDiff(prev, next) {
   new Set([...pi, ...ni]).forEach(id => {
     const a = (prev.results || {})[id] || {}, b = (next.results || {})[id] || {};
     if ((a.result || "") !== (b.result || "")) out.push(id + ": " + (RESULT_WORD[a.result] || "unscored") + " -> " + (RESULT_WORD[b.result] || "unscored"));
+    if (a.owner && b.owner && a.owner !== b.owner) out.push(id + ": role " + (SLOT_LABELS[a.owner] || a.owner) + " -> " + (SLOT_LABELS[b.owner] || b.owner));
     if ((a.note || "") !== (b.note || "")) out.push(id + ": note changed");
     const an = (a.memberIds || (a.memberId ? [a.memberId] : [])).join(), bn = (b.memberIds || (b.memberId ? [b.memberId] : [])).join();
     if (an !== bn) out.push(id + ": answerable " + (a.memberNames || a.memberName || "from part") + " -> " + (b.memberNames || b.memberName || "from part"));
@@ -161,6 +162,30 @@ async function ensureSchema(db) {
     db.prepare(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_by TEXT, updated_at TEXT)`),
   ]);
   schemaReady = true;
+}
+// ---- RTO and qualification lists: the Master File (master-data.js) plus what admins add or change in
+// the app (settings key "master_custom"). An entry with the same code as a Master File row replaces it.
+const RTO_LEVELS = ["Compliant", "Less Compliant", "Non Compliant"];
+function mergeMaster(custom) {
+  const c = custom || {};
+  const merge = (base, extra) => {
+    const map = new Map(); base.forEach(x => { if (!map.has(x.code)) map.set(x.code, { ...x }); });   // first row wins if the Master File repeats a code
+    (extra || []).forEach(x => map.set(x.code, { ...(map.get(x.code) || {}), ...x }));
+    return [...map.values()];
+  };
+  return { rtos: merge(MASTER.rtos, c.rtos), qualifications: merge(MASTER.qualifications, c.qualifications) };
+}
+function cleanListItem(kind, code, b) {
+  const str = (v, max) => String(v == null ? "" : v).trim().slice(0, max);
+  if (kind === "rtos") {
+    if (!/^\d{4,6}$/.test(code)) return { error: "RTO code is 4 to 6 digits, as on training.gov.au." };
+    const name = str(b.name, 150); if (name.length < 2) return { error: "Enter the RTO name." };
+    const level = RTO_LEVELS.includes(b.level) ? b.level : null; if (!level) return { error: "Choose the compliance level." };
+    return { item: { code, name, level, type: str(b.type, 40), processTo: str(b.processTo, 60), archived: !!b.archived } };
+  }
+  if (!/^[A-Z]{3}[A-Z0-9]{3,9}$/.test(code)) return { error: "Qualification code looks wrong (e.g. CPC30220), as on training.gov.au." };
+  const title = str(b.title, 200); if (title.length < 3) return { error: "Enter the qualification title." };
+  return { item: { code, title, package: str(b.package, 120) || "Other", entry: str(b.entry, 1000), archived: !!b.archived } };
 }
 async function getSetting(db, key, fallback) {
   const row = await db.prepare("SELECT value FROM settings WHERE key = ?1").bind(key).first();
@@ -293,7 +318,8 @@ export async function onRequest(context) {
   if (path === "bootstrap" && method === "GET") {
     const { results } = await db.prepare("SELECT json FROM records WHERE deleted_at IS NULL ORDER BY created_at").all();
     const roles = await loadRoles(db);
-    return json({ me, roles, master: MASTER, collegeNotes: COLLEGE_NOTES, records: results.map(r => JSON.parse(r.json)) });
+    const custom = await getSetting(db, "master_custom", { rtos: [], qualifications: [] });
+    return json({ me, roles, master: mergeMaster(custom), masterCustom: custom, collegeNotes: COLLEGE_NOTES, records: results.map(r => JSON.parse(r.json)) });
   }
 
   // ---- users (owner only)
@@ -450,6 +476,31 @@ export async function onRequest(context) {
     await db.prepare("UPDATE records SET json = ?2, updated_by = ?3, updated_at = ?4 WHERE id = ?1").bind(prev.id, JSON.stringify(prev), user.email, now()).run();
     return json(prev);
   }
+  // ---- RTO and qualification lists (admin edits; everyone reads them through bootstrap)
+  if (path === "master" && method === "GET") { const custom = await getSetting(db, "master_custom", { rtos: [], qualifications: [] }); return json({ master: mergeMaster(custom), custom }); }
+  const ml = path.match(/^master\/(rtos|qualifications)\/([A-Za-z0-9]{3,15})$/);
+  if (ml) {
+    if (!isAdmin) return fail(403, "Only an admin can change the RTO and qualification lists.");
+    const kind = ml[1], code = kind === "rtos" ? ml[2] : ml[2].toUpperCase();
+    const custom = await getSetting(db, "master_custom", { rtos: [], qualifications: [] });
+    custom.rtos = custom.rtos || []; custom.qualifications = custom.qualifications || [];
+    const inMaster = MASTER[kind].some(x => x.code === code);
+    if (method === "PUT") {
+      let body; try { body = await readBody(); } catch (e) { return fail(400, "Invalid request."); }
+      const { item, error } = cleanListItem(kind, code, body || {}); if (error) return fail(400, error);
+      if (body.isNew && (inMaster || custom[kind].some(x => x.code === code))) return fail(409, (kind === "rtos" ? "RTO " : "Qualification ") + code + " is already in the list. Use Edit on it.");
+      const prev = custom[kind].find(x => x.code === code);
+      item.source = inMaster ? "edited" : "added";
+      item.by = user.email; item.at = now(); item.addedBy = (prev && prev.addedBy) || user.email;
+      custom[kind] = [...custom[kind].filter(x => x.code !== code), item];
+    } else if (method === "DELETE") {
+      if (!custom[kind].some(x => x.code === code)) return fail(404, inMaster ? "This row is the Master File version already." : "Not found.");
+      custom[kind] = custom[kind].filter(x => x.code !== code);
+    } else return fail(405, "Method not allowed.");
+    await setSetting(db, "master_custom", custom, user.email);
+    return json({ master: mergeMaster(custom), custom });
+  }
+
   const rm = path.match(/^records\/([A-Za-z0-9-]{3,80})$/);
   if (rm && method === "DELETE") {
     if (!isAdmin) return fail(403, "Only an admin can delete.");
