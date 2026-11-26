@@ -22,7 +22,9 @@
   const slotById = (id) => CRITERIA.slots.find(s => s.id === id);
   const inCriteriaOrder = (ids) => { const set = new Set(ids); return [...CRITERIA.items.filter(it => set.has(it.id)).map(it => it.id), ...ids.filter(id => !itemById(id))]; };
   const compKey = (compliant) => compliant ? "compliant" : "noncompliant";
-  const ownerOf = (item, ck) => typeof item.owner === "string" ? item.owner : item.owner[ck];
+  // Which part of the file a check belongs to: the part picked on this audit (parts[id]), else the default from criteria.js.
+  const defaultPart = (item, ck) => typeof item.owner === "string" ? item.owner : item.owner[ck];
+  const ownerOf = (item, ck, parts) => (parts && parts[item.id]) || defaultPart(item, ck);
   const itemById = (id) => CRITERIA.items.find(i => i.id === id);
 
   // Checks in scope for a file at this stage with this compliance status, in phase order.
@@ -34,10 +36,10 @@
       .filter(it => it.from <= st.rank && (!it.only || it.only.includes(stageLetter)) && (it.for === "all" || it.for === ck) && (!it.cancelled || !!cancelled))
       .sort((a, b) => order.indexOf(a.phase) - order.indexOf(b.phase));
   }
-  const slotsInScope = (items, ck) => CRITERIA.slots.filter(s => items.some(it => ownerOf(it, ck) === s.id));
+  const slotsInScope = (items, ck, parts) => CRITERIA.slots.filter(s => items.some(it => ownerOf(it, ck, parts) === s.id));
 
   let records = [];
-  const ctx = { state: "loading", master: { rtos: [], qualifications: [] }, notes: {} };
+  const ctx = { state: "loading", master: { rtos: [], qualifications: [] }, masterCustom: { rtos: [], qualifications: [] }, notes: {} };
   const roleNames = () => Storage.roles.map(r => r.name);
   const rolesOf = (m) => Array.isArray(m.roles) ? m.roles : (m.role ? [m.role] : []);
   const roleSlot = (name) => (Storage.roles.find(r => r.name === name) || {}).slot || "none";
@@ -68,17 +70,17 @@
   // Who is answerable for a check: the people picked on that check (one or several), else the person in the slot.
   // overrides[id] is a list of member ids; older audits stored a single id string.
   const overrideList = (overrides, id) => { const v = overrides && overrides[id]; return Array.isArray(v) ? v.filter(Boolean) : (v ? [v] : []); };
-  const resolveOwners = (item, ck, people, overrides) => { const o = overrideList(overrides, item.id); if (o.length) return o; const p = people[ownerOf(item, ck)]; return p ? [p] : []; };
-  const resolveOwner = (item, ck, people, overrides) => resolveOwners(item, ck, people, overrides)[0] || null;
+  const resolveOwners = (item, ck, people, overrides, parts) => { const o = overrideList(overrides, item.id); if (o.length) return o; const p = people[ownerOf(item, ck, parts)]; return p ? [p] : []; };
+  const resolveOwner = (item, ck, people, overrides, parts) => resolveOwners(item, ck, people, overrides, parts)[0] || null;
   // "reassigned" = someone on the check who is not listed on that part of the file (its person or the added people)
   const isOutside = (memberId, slotId, people, extraPeople) => memberId !== (people || {})[slotId] && !((extraPeople || {})[slotId] || []).includes(memberId);
-  function computeSummary(items, results, compliant, people, overrides, extraPeople) {
+  function computeSummary(items, results, compliant, people, overrides, extraPeople, parts) {
     const ck = compKey(compliant);
     const overall = tally(items, results);
     const byPerson = [];
     items.forEach(it => {
-      const slotId = ownerOf(it, ck); const slot = slotById(slotId);
-      const owners = resolveOwners(it, ck, people, overrides);
+      const slotId = ownerOf(it, ck, parts); const slot = slotById(slotId);
+      const owners = resolveOwners(it, ck, people, overrides, parts);
       (owners.length ? owners : [null]).forEach(memberId => {
         const key = memberId || "unassigned-" + slotId;
         let p = byPerson.find(x => x.key === key);
@@ -109,7 +111,7 @@
   const auditLog = (a) => Array.isArray(a.changeLog) ? a.changeLog : (Array.isArray(a.editLog) ? a.editLog.map(e => ({ kind: e.status === "draft" ? "draft" : "changed", by: e.by, name: e.name, at: e.at, status: e.status })) : []);
   // per-person coaching: { notes, commitment }; older audits stored a plain string (treated as the commitment)
   const coachOf = (a, memberId) => { const v = (a.coachingByPerson || {})[memberId]; return typeof v === "string" ? { notes: "", commitment: v } : { notes: (v && v.notes) || "", commitment: (v && v.commitment) || "" }; };
-  const LOCKED_FIELDS = ["auditType", "stage", "stageName", "fileRef", "qualification", "receivedDate", "date", "completeDate", "sentDate", "rto", "rtoCode", "complianceLevel", "processTo", "compliant", "people", "extraPeople", "overrides", "itemIds", "results"];
+  const LOCKED_FIELDS = ["auditType", "stage", "stageName", "fileRef", "qualification", "receivedDate", "date", "completeDate", "sentDate", "rto", "rtoCode", "complianceLevel", "processTo", "compliant", "people", "extraPeople", "parts", "overrides", "itemIds", "results"];
   const COACH_FIELDS = ["coaching", "coachingByPerson", "coachingDate"];
   const FIELD_LABELS = { auditType: "Audit type", stage: "Stage", fileRef: "File", qualification: "Qualification", receivedDate: "File received", date: "Audit date", completeDate: "Portfolio complete", sentDate: "Sent to RTO", rto: "RTO", compliant: "Checklist track" };
   const RESULT_WORD = { pass: "Pass", fail: "Fail", na: "N/A" };
@@ -129,6 +131,7 @@
     new Set([...pi, ...ni]).forEach(id => {
       const a = (prev.results || {})[id] || {}, b = (next.results || {})[id] || {};
       if ((a.result || "") !== (b.result || "")) out.push(id + ": " + (RESULT_WORD[a.result] || "unscored") + " -> " + (RESULT_WORD[b.result] || "unscored"));
+      if (a.owner && b.owner && a.owner !== b.owner) out.push(id + ": role " + ((slotById(a.owner) || {}).label || a.owner) + " -> " + ((slotById(b.owner) || {}).label || b.owner));
       if ((a.note || "") !== (b.note || "")) out.push(id + ": note changed");
       const an = (a.memberIds || (a.memberId ? [a.memberId] : [])).join(), bn = (b.memberIds || (b.memberId ? [b.memberId] : [])).join();
       if (an !== bn) out.push(id + ": answerable " + (a.memberNames || a.memberName || "from part") + " -> " + (b.memberNames || b.memberName || "from part"));
@@ -177,6 +180,27 @@
   const compLabel = (c) => c ? "College-specific process" : "Generic checklist";
   const trackForLevel = (level) => (CONFIG.TRACK_BY_LEVEL[level] || "noncompliant") === "compliant";
   const rtoByCode = (code) => ctx.master.rtos.find(r => r.code === String(code));
+  // Dropdown options for RTOs and qualifications (Master File plus what admins added). Archived ones go last.
+  const RTO_LEVELS = ["Compliant", "Less Compliant", "Non Compliant"];
+  function buildRtoOptions() {
+    const active = ctx.master.rtos.filter(r => !r.archived).sort((a, b) => a.name.localeCompare(b.name));
+    const archived = ctx.master.rtos.filter(r => r.archived);
+    const opt = (r) => `<option value="${esc(r.code)}">${esc(r.name)} - ${esc(r.code)}</option>`;
+    return `<option value="">Select the RTO</option>` +
+      RTO_LEVELS.map(l => { const list = active.filter(r => r.level === l); return list.length ? `<optgroup label="${esc(l)}">${list.map(opt).join("")}</optgroup>` : ""; }).join("") +
+      (archived.length ? `<optgroup label="Archived RTOs">${archived.map(opt).join("")}</optgroup>` : "") +
+      `<option value="other">Other (type it)</option>`;
+  }
+  function buildQualOptions() {
+    const active = ctx.master.qualifications.filter(q => !q.archived);
+    const archived = ctx.master.qualifications.filter(q => q.archived);
+    const opt = (q) => `<option value="${esc(q.code)}">${esc(q.code)} - ${esc(q.title)}</option>`;
+    const packages = [...new Set(active.map(q => q.package || "Other"))].sort();
+    return `<option value="">Select the qualification</option>` +
+      packages.map(pk => `<optgroup label="${esc(pk)}">${active.filter(q => (q.package || "Other") === pk).sort((a, b) => a.code.localeCompare(b.code)).map(opt).join("")}</optgroup>`).join("") +
+      (archived.length ? `<optgroup label="Archived qualifications">${archived.map(opt).join("")}</optgroup>` : "") +
+      `<option value="other">Other (type it)</option>`;
+  }
   const qualByCode = (code) => ctx.master.qualifications.find(q => q.code.toUpperCase() === String(code).trim().toUpperCase());
 
   // ---- home ---------------------------------------------------------------
@@ -297,14 +321,14 @@
       auditType: "completed", stage: "G", fileRef: "", qualification: "", qualOther: "", receivedDate: "", completeDate: "", sentDate: "", date: today(),
       auditor: cloud() ? Storage.me.name : (localStorage.getItem("atsr_qa_auditor") || ""),
       rtoCode: "", rtoOther: "", compliant: false,
-      people: {}, extraPeople: {}, results: {}, coaching: "", coachingByPerson: {}, coachingDate: "", overrides: {}, reason: "",
+      people: {}, extraPeople: {}, parts: {}, results: {}, coaching: "", coachingByPerson: {}, coachingDate: "", overrides: {}, reason: "",
     };
     if (existing) {
       const e = existing;
       Object.assign(draft, {
         auditType: e.auditType, stage: e.stage, fileRef: e.fileRef || "", receivedDate: e.receivedDate || "", completeDate: e.completeDate || "", sentDate: e.sentDate || "", date: e.date || today(),
         auditor: e.auditor || draft.auditor, rtoCode: e.rtoCode || (e.rto ? "other" : ""), rtoOther: e.rtoCode ? "" : (e.rto || ""), compliant: !!e.compliant,
-        people: { ...(e.people || {}) }, extraPeople: Object.fromEntries(Object.entries(e.extraPeople || {}).map(([k, v]) => [k, [...v]])), coaching: e.coaching || "", coachingByPerson: { ...(e.coachingByPerson || {}) }, coachingDate: e.coachingDate || "", overrides: Object.fromEntries(Object.entries(e.overrides || {}).map(([k, v]) => [k, Array.isArray(v) ? [...v] : [v]])),
+        people: { ...(e.people || {}) }, parts: { ...(e.parts || {}) }, extraPeople: Object.fromEntries(Object.entries(e.extraPeople || {}).map(([k, v]) => [k, [...v]])), coaching: e.coaching || "", coachingByPerson: { ...(e.coachingByPerson || {}) }, coachingDate: e.coachingDate || "", overrides: Object.fromEntries(Object.entries(e.overrides || {}).map(([k, v]) => [k, Array.isArray(v) ? [...v] : [v]])),
         results: Object.fromEntries(Object.entries(e.results || {}).map(([k, v]) => [k, { result: v.result || null, note: v.note || "" }])),
       });
       const qcode = (e.qualification || "").split(" ")[0];
@@ -328,30 +352,19 @@
     draft.people = defaultPeople();
     // Who did this check: one or more people. Shown as chips, with a small "+" dropdown to add another.
     const whoWidget = (it, slotId) => {
-      const chosen = resolveOwners(it, compKey(draft.compliant), draft.people, draft.overrides);
+      const chosen = resolveOwners(it, compKey(draft.compliant), draft.people, draft.overrides, draft.parts);
       const custom = overrideList(draft.overrides, it.id).length > 0;
       const slotPeople = [draft.people[slotId], ...(draft.extraPeople[slotId] || [])].filter(Boolean);
       const chips = chosen.map(id => { const m = memberById(id); const out = isOutside(id, slotId, draft.people, draft.extraPeople); return `<span class="who-chip ${out ? "out" : ""}" title="${out ? "Not listed on this part of the file" : ""}">${esc(m ? m.name : "Unknown")}${custom ? `<button type="button" class="chip-x" data-who-rm="${esc(id)}" aria-label="Remove">&times;</button>` : ` <span class="muted">(from part)</span>`}</span>`; }).join("");
       const left = team.filter(m => !chosen.includes(m.id));
       const o = (m, tag) => `<option value="${m.id}">${esc(m.name)}${tag}</option>`;
       const onPart = left.filter(m => slotPeople.includes(m.id)), rest = left.filter(m => !slotPeople.includes(m.id));
-      const add = `<select class="who-add" title="Add a person to this check"><option value="">+ person</option>${onPart.map(m => o(m, " (on this part)")).join("")}${onPart.length && rest.length ? `<option disabled>- - -</option>` : ""}${rest.map(m => o(m, "")).join("")}</select>`;
+      const add = `<select class="who-add" data-search title="Add a person to this check"><option value="">+ person</option>${onPart.map(m => o(m, " (on this part)")).join("")}${onPart.length && rest.length ? `<option disabled>- - -</option>` : ""}${rest.map(m => o(m, "")).join("")}</select>`;
       return `<span class="who-wrap" data-who="${it.id}">${chips || `<span class="who-chip out">Unassigned</span>`}${add}${custom && chosen.length !== 1 || (custom && chosen[0] !== draft.people[slotId]) ? `<button type="button" class="link small" data-who-reset="${it.id}">reset</button>` : ""}</span>`;
     };
 
-    const levels = ["Compliant", "Less Compliant", "Non Compliant"];
-    const active = ctx.master.rtos.filter(r => !r.archived);
-    const archived = ctx.master.rtos.filter(r => r.archived);
-    const opt = (r) => `<option value="${esc(r.code)}">${esc(r.name)} - ${esc(r.code)}</option>`;
-    const rtoOptions = `<option value="">Select the RTO</option>` +
-      levels.map(l => { const list = active.filter(r => r.level === l); return list.length ? `<optgroup label="${esc(l)}">${list.map(opt).join("")}</optgroup>` : ""; }).join("") +
-      (archived.length ? `<optgroup label="Archived RTOs">${archived.map(opt).join("")}</optgroup>` : "") +
-      `<option value="other">Other (type it)</option>`;
-
-    const packages = [...new Set(ctx.master.qualifications.map(q => q.package || "Other"))].sort();
-    const qualOptions = `<option value="">Select the qualification</option>` +
-      packages.map(pk => `<optgroup label="${esc(pk)}">${ctx.master.qualifications.filter(q => (q.package || "Other") === pk).map(q => `<option value="${esc(q.code)}">${esc(q.code)} - ${esc(q.title)}</option>`).join("")}</optgroup>`).join("") +
-      `<option value="other">Other (type it)</option>`;
+    const rtoOptions = buildRtoOptions();
+    const qualOptions = buildQualOptions();
 
     view().innerHTML = `
       <nav class="crumbs"><a href="#/">Team</a> / ${existing ? `<a href="#/audit/${esc(existing.id)}">${esc(existing.fileRef || existing.id)}</a> / Edit` : "New audit"}</nav>
@@ -375,9 +388,11 @@
               <label>Checklist track
                 <select id="f-comp"><option value="1">College-specific process</option><option value="0" selected>Generic checklist</option></select>
               </label>
-              <label class="span3">RTO <select id="f-rto">${rtoOptions}</select></label>
+              <div class="span3 has-quick-add"><label>RTO <select id="f-rto" data-search>${rtoOptions}</select></label>${can.admin ? `<button type="button" class="link small quick-add" data-qa="rtos">+ Add RTO</button>` : ""}</div>
+              <div class="span3 qa-panel" id="qa-rtos" hidden></div>
               <label id="rto-other-wrap" class="span3" hidden>RTO name and code <input id="f-rto-other" type="text" placeholder="RTO name and code"></label>
-              <label class="span3">Qualification <select id="f-qual">${qualOptions}</select></label>
+              <div class="span3 has-quick-add"><label>Qualification <select id="f-qual" data-search>${qualOptions}</select></label>${can.admin ? `<button type="button" class="link small quick-add" data-qa="qualifications">+ Add qualification</button>` : ""}</div>
+              <div class="span3 qa-panel" id="qa-qualifications" hidden></div>
               <label id="qual-other-wrap" class="span3" hidden>Qualification code and title <input id="f-qual-other" type="text" placeholder="e.g. CPC30220 Certificate III in Carpentry"></label>
             </div>
             <p id="file-facts" class="facts"></p>
@@ -422,11 +437,11 @@
     }
     function fillPeople() {
       const items = scopeItems(draft.stage, draft.compliant, cancelled());
-      const slots = slotsInScope(items, compKey(draft.compliant));
+      const slots = slotsInScope(items, compKey(draft.compliant), draft.parts);
       const opts = (sel) => `<option value="">Unassigned</option>` + team.map(m => `<option value="${m.id}" ${sel === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("");
       $("#people").innerHTML = `<div class="people-title">Who handled this file</div><p class="muted small">One person per part is the usual case. If two people worked on a part, add the second one here and use the "who did this" dropdown on the checks they did.</p><div class="people-grid">` +
-        slots.map(s => `<div class="slot-box"><label>${esc(s.label)}<select data-slot="${s.id}">${opts(draft.people[s.id])}</select></label>` +
-          (draft.extraPeople[s.id] || []).map((id, i) => `<label class="extra">also<select data-slot="${s.id}" data-extra="${i}">${opts(id)}</select><button type="button" class="link small" data-remove-extra="${s.id}" data-i="${i}" title="Remove">remove</button></label>`).join("") +
+        slots.map(s => `<div class="slot-box"><label>${esc(s.label)}<select data-slot="${s.id}" data-search>${opts(draft.people[s.id])}</select></label>` +
+          (draft.extraPeople[s.id] || []).map((id, i) => `<label class="extra">also<select data-slot="${s.id}" data-extra="${i}" data-search>${opts(id)}</select><button type="button" class="link small" data-remove-extra="${s.id}" data-i="${i}" title="Remove">remove</button></label>`).join("") +
           `<button type="button" class="link small" data-add-extra="${s.id}">+ add another person</button></div>`).join("") + `</div>`;
       $("#people").querySelectorAll("select[data-slot]").forEach(sel => sel.addEventListener("change", () => {
         if (sel.dataset.extra !== undefined) { (draft.extraPeople[sel.dataset.slot] || (draft.extraPeople[sel.dataset.slot] = []))[Number(sel.dataset.extra)] = sel.value; }
@@ -518,6 +533,28 @@
     });
     $("#f-rto-other").addEventListener("input", e => { draft.rtoOther = e.target.value; fillReminders(); });
     $("#f-comp").addEventListener("change", e => { draft.compliant = e.target.value === "1"; refreshTrack(); });
+    // quick add: a missing RTO or qualification goes straight into the list and gets selected
+    view().querySelectorAll(".quick-add").forEach(b => b.addEventListener("click", (e) => {
+      e.preventDefault(); const kind = b.dataset.qa, panel = $("#qa-" + kind);
+      if (!panel.hidden) { panel.hidden = true; return; }
+      panel.innerHTML = listItemFields(kind, null, "qa") + `<div class="row-actions"><button type="button" class="btn primary small-btn" data-qa-save>${kind === "rtos" ? "Add RTO" : "Add qualification"}</button> <button type="button" class="btn ghost small-btn" data-qa-cancel>Cancel</button></div>`;
+      panel.hidden = false; panel.querySelector("input").focus();
+      panel.querySelectorAll("input").forEach(inp => inp.addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); save(); } }));
+      panel.querySelector("[data-qa-cancel]").addEventListener("click", () => { panel.hidden = true; });
+      async function save() {
+        const data = readListItemFields(kind, panel, "qa");
+        if (data.error) { setStatus(data.error, "err"); return; }
+        try {
+          const res = await Storage.saveListItem(kind, data.code, data.item, true);
+          ctx.master = res.master; ctx.masterCustom = res.custom; panel.hidden = true;
+          const sel = kind === "rtos" ? $("#f-rto") : $("#f-qual");
+          sel.innerHTML = kind === "rtos" ? buildRtoOptions() : buildQualOptions();
+          sel.value = data.code; sel.dispatchEvent(new Event("change", { bubbles: true }));
+          setStatus((kind === "rtos" ? "RTO " : "Qualification ") + data.code + " added to the list and selected.", "ok");
+        } catch (err) { setStatus(err.message, "err"); }
+      }
+      panel.querySelector("[data-qa-save]").addEventListener("click", save);
+    }));
     $("#f-coaching").addEventListener("input", e => draft.coaching = e.target.value);
 
     // ---- checklist
@@ -530,8 +567,9 @@
         if (it.phase !== lastPhase) { const ph = phaseById(it.phase); html += `<h3 class="phase">${esc(ph.title)} <span class="muted">${esc(ph.sop)}</span></h3>`; lastPhase = it.phase; }
         n++;
         const r = draft.results[it.id] || { result: null, note: "" };
-        const slot = slotById(ownerOf(it, ck));
-        const owners = resolveOwners(it, ck, draft.people, draft.overrides);
+        const slot = slotById(ownerOf(it, ck, draft.parts));
+        const owners = resolveOwners(it, ck, draft.people, draft.overrides, draft.parts);
+        const dflt = defaultPart(it, ck); const moved = slot.id !== dflt;
         const outside = owners.some(id => isOutside(id, slot.id, draft.people, draft.extraPeople));   // someone not listed on this part
         const shared = owners.length > 1;
         html += `
@@ -539,7 +577,7 @@
             <div class="item-n">${n}</div>
             <div class="item-body">
               <p>${esc(it.text)}</p>
-              <div class="item-meta"><span class="who">${esc(slot.label)}:</span>${whoWidget(it, slot.id)}${shared ? `<span class="shared">shared</span>` : ""}${outside ? `<span class="reassigned">reassigned</span>` : ""}<span class="ref">${esc(it.ref)}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</div>
+              <div class="item-meta"><select class="part-sel" data-part="${it.id}" data-search title="Which part of the file (role) this check belongs to on this audit">${CRITERIA.slots.map(sl => `<option value="${sl.id}" ${sl.id === slot.id ? "selected" : ""} ${sl.id === dflt ? 'data-hint="default"' : ""}>${esc(sl.label)}</option>`).join("")}</select>${moved ? `<span class="reassigned" title="Default: ${esc(slotById(dflt).label)}">role changed</span>` : ""}${whoWidget(it, slot.id)}${shared ? `<span class="shared">shared</span>` : ""}${outside ? `<span class="reassigned">reassigned</span>` : ""}<span class="ref">${esc(it.ref)}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</div>
               <textarea class="note" placeholder="Notes / evidence (required for a Fail)" rows="1">${esc(r.note)}</textarea>
             </div>
             <div class="seg" role="group" aria-label="Result for check ${n}">
@@ -559,8 +597,14 @@
           row.classList.toggle("is-fail", cur.result === "fail");
           refreshPanel();
         }));
-        const slotId = ownerOf(itemById(id), ck);
-        const current = () => resolveOwners(itemById(id), ck, draft.people, draft.overrides);
+        const current = () => resolveOwners(itemById(id), ck, draft.people, draft.overrides, draft.parts);
+        // change the role (part of the file) for this check: it goes to that part's person, no need to pick someone first
+        row.querySelector(".part-sel").addEventListener("change", (e) => {
+          const v = e.target.value; if (v === defaultPart(itemById(id), ck)) delete draft.parts[id]; else draft.parts[id] = v;
+          delete draft.overrides[id];
+          if (!draft.people[v]) { const d = defaultPeople(); if (d[v]) draft.people[v] = d[v]; }
+          fillPeople(); fillPersonNotes(); renderItems();
+        });
         row.querySelector(".who-add").addEventListener("change", (e) => { if (!e.target.value) return; draft.overrides[id] = [...current(), e.target.value]; fillPersonNotes(); renderItems(); });
         row.querySelectorAll("[data-who-rm]").forEach(b => b.addEventListener("click", () => { const next = current().filter(x => x !== b.dataset.whoRm); if (next.length) draft.overrides[id] = next; else delete draft.overrides[id]; fillPersonNotes(); renderItems(); }));
         const reset = row.querySelector("[data-who-reset]"); if (reset) reset.addEventListener("click", () => { delete draft.overrides[id]; fillPersonNotes(); renderItems(); });
@@ -575,7 +619,7 @@
     const panel = $("#result-panel");
     function refreshPanel() {
       const items = scopeItems(draft.stage, draft.compliant, cancelled());
-      const s = computeSummary(items, draft.results, draft.compliant, draft.people, draft.overrides, draft.extraPeople);
+      const s = computeSummary(items, draft.results, draft.compliant, draft.people, draft.overrides, draft.extraPeople, draft.parts);
       const missingNotes = items.some(it => draft.results[it.id]?.result === "fail" && !(draft.results[it.id].note || "").trim());
       const unassigned = s.byPerson.some(p => !p.memberId);
       const noRto = !rto() && !draft.rtoOther.trim();
@@ -622,7 +666,7 @@
       const ck = compKey(draft.compliant);
       const peopleNames = {}; Object.keys(draft.people).forEach(k => { const m = memberById(draft.people[k]); if (m) peopleNames[k] = m.name; });
       const r = rto(); const q = qualByCode(draft.qualification);
-      const ownerName = (it) => { const ids = resolveOwners(it, ck, draft.people, draft.overrides); const names = ids.map(id => (memberById(id) || {}).name || "").filter(Boolean); return { memberId: ids[0] || "", memberName: names[0] || "", memberIds: ids, memberNames: names.join(", ") }; };
+      const ownerName = (it) => { const ids = resolveOwners(it, ck, draft.people, draft.overrides, draft.parts); const names = ids.map(id => (memberById(id) || {}).name || "").filter(Boolean); return { memberId: ids[0] || "", memberName: names[0] || "", memberIds: ids, memberNames: names.join(", ") }; };
       const involved = new Set([...Object.values(draft.people), ...Object.values(draft.extraPeople).flat(), ...Object.values(draft.overrides).flat()]);
       const audit = {
         id: existing ? existing.id : uid("QA"), type: "audit", status,
@@ -636,15 +680,16 @@
         auditor: draft.auditor.trim(),
         rto: rtoName(), rtoCode: r ? r.code : "", complianceLevel: r ? r.level : "", processTo: r ? r.processTo : "",
         compliant: draft.compliant,
-        people: Object.fromEntries(slotsInScope(items, ck).map(s => [s.id, draft.people[s.id] || ""])), peopleNames,
-        extraPeople: Object.fromEntries(slotsInScope(items, ck).map(s => [s.id, (draft.extraPeople[s.id] || []).filter(Boolean)]).filter(([, v]) => v.length)),
+        people: Object.fromEntries(slotsInScope(items, ck, draft.parts).map(s => [s.id, draft.people[s.id] || ""])), peopleNames,
+        parts: Object.fromEntries(Object.entries(draft.parts).filter(([id, v]) => items.some(it => it.id === id) && v !== defaultPart(itemById(id), ck))),
+        extraPeople: Object.fromEntries(slotsInScope(items, ck, draft.parts).map(s => [s.id, (draft.extraPeople[s.id] || []).filter(Boolean)]).filter(([, v]) => v.length)),
         extraPeopleNames: Object.fromEntries(Object.values(draft.extraPeople).flat().filter(Boolean).map(id => [id, (memberById(id) || {}).name || ""])),
         itemIds: items.map(it => it.id),
-        results: Object.fromEntries(items.map(it => [it.id, { result: draft.results[it.id]?.result || null, note: (draft.results[it.id]?.note || "").trim(), owner: ownerOf(it, ck), ...ownerName(it) }])),
+        results: Object.fromEntries(items.map(it => [it.id, { result: draft.results[it.id]?.result || null, note: (draft.results[it.id]?.note || "").trim(), owner: ownerOf(it, ck, draft.parts), ...ownerName(it) }])),
         overrides: Object.fromEntries(Object.entries(draft.overrides).filter(([id, v]) => items.some(it => it.id === id) && overrideList(draft.overrides, id).length).map(([id]) => [id, overrideList(draft.overrides, id)])),
         coaching: draft.coaching.trim(), coachingDate: draft.coachingDate || "",
         coachingByPerson: Object.fromEntries(Object.keys(draft.coachingByPerson).filter(id => involved.has(id)).map(id => [id, { notes: coachOf(draft, id).notes.trim(), commitment: coachOf(draft, id).commitment.trim() }]).filter(([, c]) => c.notes || c.commitment)),
-        summary: computeSummary(items, draft.results, draft.compliant, draft.people, draft.overrides, draft.extraPeople),
+        summary: computeSummary(items, draft.results, draft.compliant, draft.people, draft.overrides, draft.extraPeople, draft.parts),
         criteriaVersion: CRITERIA.version, createdAt: existing ? existing.createdAt : new Date().toISOString(),
       };
       if (existing) { ["loggedBy", "loggedAt", "changeLog", "pending"].forEach(k => { if (existing[k] !== undefined) audit[k] = existing[k]; }); if (locked) { audit.coaching = existing.coaching || ""; audit.coachingByPerson = existing.coachingByPerson || {}; audit.coachingDate = existing.coachingDate || ""; audit.auditor = existing.auditor || audit.auditor; } }
@@ -694,12 +739,13 @@
       n++;
       const r = a.results[iid] || {}; const slot = slotById(r.owner); const whoName = r.memberNames || r.memberName || a.peopleNames[r.owner] || "";
       const ids = r.memberIds || (r.memberId ? [r.memberId] : []); const out = ids.some(id => isOutside(id, r.owner, a.people, a.extraPeople));
+      const movedFrom = a.parts && a.parts[iid] ? slotById(defaultPart(it, compKey(a.compliant))) : null;
       html += `
         <div class="item ${r.result === "fail" ? "is-fail" : ""}">
           <div class="item-n">${n}</div>
           <div class="item-body">
             <p>${esc(it.text)}</p>
-            <div class="item-meta"><span class="who">${esc(slot?.label || "")}${whoName ? ": " + esc(whoName) : ""}</span>${ids.length > 1 ? `<span class="shared">shared</span>` : ""}${out ? `<span class="reassigned">reassigned</span>` : ""}<span class="ref">${esc(it.ref)}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</div>
+            <div class="item-meta"><span class="who">${esc(slot?.label || "")}${whoName ? ": " + esc(whoName) : ""}</span>${movedFrom ? `<span class="reassigned" title="Default: ${esc(movedFrom.label)}">role changed</span>` : ""}${ids.length > 1 ? `<span class="shared">shared</span>` : ""}${out ? `<span class="reassigned">reassigned</span>` : ""}<span class="ref">${esc(it.ref)}</span>${it.critical ? `<span class="crit">Critical</span>` : ""}</div>
             ${r.note ? `<p class="note-ro">${esc(r.note)}</p>` : ""}
           </div>
           <div class="seg"><span class="pill ${esc(r.result || "none")}">${r.result === "pass" ? "Pass" : r.result === "fail" ? "Fail" : r.result === "na" ? "N/A" : "-"}</span></div>
@@ -916,6 +962,118 @@
     }));
   }
 
+  // ---- RTOs and qualifications --------------------------------------------
+  // Fields for adding or editing one RTO / qualification. Used on the lists page and in the audit form.
+  function listItemFields(kind, item, prefix) {
+    const v = (k) => esc(item ? (item[k] == null ? "" : item[k]) : "");
+    const lock = item ? "disabled" : "";
+    if (kind === "rtos") {
+      const proc = [...new Set(ctx.master.rtos.map(r => r.processTo).filter(Boolean))].sort();
+      return `<div class="li-grid">
+        <label>RTO code <input data-f="code" type="text" inputmode="numeric" maxlength="6" placeholder="e.g. 45210" value="${v("code")}" ${lock}></label>
+        <label class="li-wide">RTO name <input data-f="name" type="text" maxlength="150" placeholder="Legal or trading name" value="${v("name")}"></label>
+        <label>Compliance level <select data-f="level" data-plain>${RTO_LEVELS.map(l => `<option ${item && item.level === l ? "selected" : (!item && l === "Non Compliant" ? "selected" : "")}>${l}</option>`).join("")}</select></label>
+        <label>Process to <input data-f="processTo" type="text" list="${prefix}-dl-proc" maxlength="60" placeholder="Direct to RTO, or the RTO agent" value="${item ? v("processTo") : "Direct to RTO"}"></label>
+        <label>Type <input data-f="type" type="text" list="${prefix}-dl-type" maxlength="40" placeholder="RTO" value="${item ? v("type") : "RTO"}"></label>
+        ${item ? `<label class="check"><input data-f="archived" type="checkbox" ${item.archived ? "checked" : ""}> Archived (kept for old audits, listed last)</label>` : ""}
+        <datalist id="${prefix}-dl-proc">${proc.map(p => `<option value="${esc(p)}">`).join("")}</datalist>
+        <datalist id="${prefix}-dl-type"><option value="RTO"><option value="CRICOS"></datalist>
+      </div>`;
+    }
+    const packages = [...new Set(ctx.master.qualifications.map(q => q.package).filter(Boolean))].sort();
+    return `<div class="li-grid">
+      <label>Qualification code <input data-f="code" type="text" maxlength="12" placeholder="e.g. CPC30220" value="${v("code")}" ${lock} style="text-transform:uppercase"></label>
+      <label class="li-wide">Title <input data-f="title" type="text" maxlength="200" placeholder="Exactly as on training.gov.au" value="${v("title")}"></label>
+      <label class="li-wide">Training package <input data-f="package" type="text" list="${prefix}-dl-pkg" maxlength="120" placeholder="e.g. Construction, Plumbing and Services" value="${v("package")}"></label>
+      <label class="li-full">Entry requirements <textarea data-f="entry" rows="2" maxlength="1000" placeholder="As on training.gov.au, or: There are no entry requirements for this qualification.">${v("entry")}</textarea></label>
+      ${item ? `<label class="check"><input data-f="archived" type="checkbox" ${item.archived ? "checked" : ""}> Archived (kept for old audits, listed last)</label>` : ""}
+      <datalist id="${prefix}-dl-pkg">${packages.map(p => `<option value="${esc(p)}">`).join("")}</datalist>
+    </div>`;
+  }
+  function readListItemFields(kind, root) {
+    const f = (k) => { const el = root.querySelector(`[data-f="${k}"]`); return !el ? "" : el.type === "checkbox" ? el.checked : el.value.trim(); };
+    if (kind === "rtos") {
+      const code = f("code");
+      if (!/^\d{4,6}$/.test(code)) return { error: "RTO code is 4 to 6 digits, as on training.gov.au." };
+      if (f("name").length < 2) return { error: "Enter the RTO name." };
+      return { code, item: { name: f("name"), level: f("level"), processTo: f("processTo"), type: f("type"), archived: !!f("archived") } };
+    }
+    const code = f("code").toUpperCase().replace(/\s+/g, "");
+    if (!/^[A-Z]{3}[A-Z0-9]{3,9}$/.test(code)) return { error: "Qualification code looks wrong (e.g. CPC30220)." };
+    if (f("title").length < 3) return { error: "Enter the qualification title." };
+    return { code, item: { title: f("title"), package: f("package") || "Other", entry: f("entry"), archived: !!f("archived") } };
+  }
+
+  function renderLists(kind) {
+    const custom = (ctx.masterCustom || {})[kind] || [];
+    const src = (code) => { const c = custom.find(x => x.code === code); return c ? c.source : "master"; };
+    const SRC = { master: "Master File", added: "Added", edited: "Edited" };
+    const isRto = kind === "rtos";
+    const rows = ctx.master[kind].slice().sort((a, b) => isRto ? a.name.localeCompare(b.name) : a.code.localeCompare(b.code));
+    let editing = null;
+    view().innerHTML = `
+      <nav class="crumbs"><a href="#/">Team</a> / RTOs and qualifications</nav>
+      <section class="hero"><div><h1>RTOs and qualifications</h1><p class="muted">These lists feed the RTO and qualification dropdowns on every audit. They start from the ATSR Master File. ${can.admin ? "Add anything missing, or edit a row: changes are kept apart from the Master File, so an edited row can be reset to it at any time." : "Ask an admin to add anything missing; in the meantime use Other (type it) on the audit."}</p></div></section>
+      <div class="tabs"><a class="tab ${isRto ? "on" : ""}" href="#/lists/rtos">RTOs <span class="muted">${ctx.master.rtos.length}</span></a><a class="tab ${!isRto ? "on" : ""}" href="#/lists/qualifications">Qualifications <span class="muted">${ctx.master.qualifications.length}</span></a></div>
+      ${can.admin ? `<form id="li-form" class="li-form" autocomplete="off"><h3 id="li-title">${isRto ? "Add an RTO" : "Add a qualification"}</h3><div id="li-fields">${listItemFields(kind, null, "li")}</div>
+        <div class="row-actions"><button class="btn primary" type="submit" id="li-submit">${isRto ? "Add RTO" : "Add qualification"}</button> <button type="button" class="btn ghost" id="li-cancel" hidden>Cancel</button></div></form>` : ""}
+      <div class="li-search"><input id="li-search" type="text" placeholder="${isRto ? "Search by name, code, level or Process to" : "Search by code, title or training package"}" autocomplete="off"></div>
+      <table class="list li-table"><thead><tr>${isRto ? "<th>Code</th><th>RTO</th><th>Compliance</th><th>Process to</th>" : "<th>Code</th><th>Qualification</th><th>Training package</th>"}<th>Source</th>${can.admin ? "<th></th>" : ""}</tr></thead><tbody id="li-body"></tbody></table>
+      <p class="muted small" id="li-count"></p>`;
+    const LIMIT = 200;
+    function draw() {
+      const words = $("#li-search").value.toLowerCase().split(/\s+/).filter(Boolean);
+      const hits = rows.filter(r => { const hay = [r.code, r.name, r.title, r.level, r.processTo, r.package, SRC[src(r.code)], r.archived ? "archived" : ""].join(" ").toLowerCase(); return words.every(w => hay.includes(w)); });
+      $("#li-body").innerHTML = hits.slice(0, LIMIT).map(r => { const sc = src(r.code); return `<tr class="${r.archived ? "is-archived" : ""}">
+        <td class="mono">${esc(r.code)}</td>
+        ${isRto ? `<td>${esc(r.name)}</td><td>${esc(r.level)}</td><td>${esc(r.processTo || "")}</td>` : `<td>${esc(r.title)}${r.entry && !/no entry requirements/i.test(r.entry) ? `<div class="muted small">${esc(r.entry)}</div>` : ""}</td><td>${esc(r.package || "")}</td>`}
+        <td><span class="chip src-${sc}">${SRC[sc]}</span>${r.archived ? ` <span class="chip src-archived">Archived</span>` : ""}</td>
+        ${can.admin ? `<td class="row-actions"><button class="link" data-li-edit="${esc(r.code)}">Edit</button>${sc === "added" ? ` <button class="link danger-link" data-li-del="${esc(r.code)}">Delete</button>` : sc === "edited" ? ` <button class="link" data-li-reset="${esc(r.code)}">Reset</button>` : ""}</td>` : ""}
+      </tr>`; }).join("") || `<tr><td colspan="6" class="muted">Nothing matches.</td></tr>`;
+      $("#li-count").textContent = hits.length > LIMIT ? `Showing ${LIMIT} of ${hits.length}. Search to narrow it down.` : `${hits.length} shown.`;
+      view().querySelectorAll("[data-li-edit]").forEach(b => b.addEventListener("click", () => startEdit(b.dataset.liEdit)));
+      view().querySelectorAll("[data-li-del]").forEach(b => b.addEventListener("click", () => remove(b.dataset.liDel, "delete")));
+      view().querySelectorAll("[data-li-reset]").forEach(b => b.addEventListener("click", () => remove(b.dataset.liReset, "reset")));
+    }
+    function startEdit(code) {
+      editing = rows.find(r => r.code === code); if (!editing) return;
+      $("#li-fields").innerHTML = listItemFields(kind, editing, "li");
+      $("#li-title").textContent = "Edit " + (isRto ? editing.name : editing.code);
+      $("#li-submit").textContent = "Save changes"; $("#li-cancel").hidden = false;
+      $("#li-form").scrollIntoView({ behavior: "smooth", block: "start" });
+      const first = $("#li-fields").querySelector("input:not([disabled])"); if (first) first.focus();
+    }
+    function stopEdit() {
+      editing = null; $("#li-fields").innerHTML = listItemFields(kind, null, "li");
+      $("#li-title").textContent = isRto ? "Add an RTO" : "Add a qualification";
+      $("#li-submit").textContent = isRto ? "Add RTO" : "Add qualification"; $("#li-cancel").hidden = true;
+    }
+    async function apply(res, msg) {
+      ctx.master = res.master; ctx.masterCustom = res.custom; setStatus(msg, "ok");
+      const q = $("#li-search").value; renderLists(kind); $("#li-search").value = q; $("#li-search").dispatchEvent(new Event("input"));
+    }
+    async function remove(code, how) {
+      const r = rows.find(x => x.code === code);
+      const label = isRto ? `${r.name} (${code})` : `${code} ${r.title}`;
+      if (!confirm(how === "delete" ? `Delete ${label} from the list? Audits that already used it keep it.` : `Reset ${label} to the Master File version? Your edits to this row are removed.`)) return;
+      try { await apply(await Storage.removeListItem(kind, code), how === "delete" ? "Deleted." : "Reset to the Master File."); }
+      catch (err) { setStatus(err.message, "err"); }
+    }
+    $("#li-search").addEventListener("input", draw);
+    if (can.admin) {
+      $("#li-cancel").addEventListener("click", stopEdit);
+      $("#li-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const data = readListItemFields(kind, $("#li-fields"));
+        if (editing) data.code = editing.code;
+        if (data.error) { setStatus(data.error, "err"); return; }
+        try { await apply(await Storage.saveListItem(kind, data.code, data.item, !editing), (editing ? "Saved " : "Added ") + data.code + "."); }
+        catch (err) { setStatus(err.message, "err"); }
+      });
+    }
+    draw();
+  }
+
   // ---- logins (owner) ---------------------------------------------------
   function renderUsers() {
     if (!cloud()) { view().innerHTML = `<p class="empty">Logins only exist on the live site. <a href="#/">Back</a></p>`; return; }
@@ -1086,6 +1244,7 @@
     if (page === "audit" && arg) return renderAudit(arg);
     if (page === "team") return renderTeam();
     if (page === "roles") return renderRoles();
+    if (page === "lists") return renderLists(arg === "qualifications" ? "qualifications" : "rtos");
     if (page === "users") return renderUsers();
     if (page === "account") return renderPassword(false);
     if (page === "criteria") return renderCriteria();
@@ -1106,7 +1265,7 @@
       const b = await Storage.init();
       ctx.state = b.state;
       if (b.state === "ready") {
-        ctx.master = b.master || ctx.master; ctx.notes = b.collegeNotes || {};
+        ctx.master = b.master || ctx.master; ctx.masterCustom = b.masterCustom || { rtos: [], qualifications: [] }; ctx.notes = b.collegeNotes || {};
         records = (b.records || []).filter(r => r.type !== "audit" || r.itemIds);
         records.forEach(r => { if (r.type === "member" && !Array.isArray(r.roles)) r.roles = r.role ? [r.role] : []; });
         if (can.admin && !records.some(r => r.type === "member") && CONFIG.TEAM_SEED.length) {
