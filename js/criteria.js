@@ -20,6 +20,9 @@
     - Bump "version" whenever a check changes. It is printed on every PDF.
 
   Version history
+    2.4 (Nov 2026)  Portfolio Review and Follow-up split from Drafting. RV-01 / RV-02 (portfolio check)
+                    and RV-03 (Missing Documents field) now belong to the drafter. DR-06 (personal
+                    information blurred) removed.
     2.3 (Nov 2026)  Sections renamed and reordered as the CEO set them. CEO standards added: signatures, 2-hour replies, Description/Visa/Company
                     Name fields, invoice timing and corrections, bulk invoices, accounting notes
                     and the bookkeeper's part, prerequisites, no bank cards, compliant-college
@@ -29,7 +32,7 @@
 */
 
 const CRITERIA = {
-  version: "2.3",
+  version: "2.4",
   manual: "B2B Operations Manual v2.0 (ATSR-OPS-B2B-MANUAL) + CEO standards Nov 2026",
   thresholds: { pass: 0.9, coaching: 0.75 },
 
@@ -64,7 +67,8 @@ const CRITERIA = {
     { id: "assign", title: "RTO Assignment and Initial Check", sop: "SOP 02 step 3, SOP 06 / CEO standards" },
     { id: "invoice", title: "Invoicing and Payments", sop: "SOP 08, SOP 10 / CEO standards" },
     { id: "rtodocs", title: "RTO Documents", sop: "SOP 09 / CEO standards" },
-    { id: "drafting", title: "Drafting, Portfolio Review and Follow-up", sop: "SOP 03 to 07, 14 / CEO standards" },
+    { id: "drafting", title: "Drafting", sop: "SOP 03 to 06 / CEO standards" },
+    { id: "review", title: "Portfolio Review and Follow-up", sop: "SOP 07, 14 / CEO standards" },
     { id: "hold", title: "On Hold", sop: "SOP 12" },
     { id: "submission", title: "RTO Submission and Communication", sop: "SOP 10 / CEO standards" },
     { id: "softcopy", title: "Soft Copy", sop: "SOP 11 / CEO standards" },
@@ -145,7 +149,7 @@ const CRITERIA = {
     { id: "RD-05", phase: "rtodocs", owner: "review", from: 4, for: "noncompliant", critical: false, ref: "CEO standards",
       text: "Where this less or non-compliant college requires signed enrolment forms, they went to the RTO on time with the portfolio." },
 
-    // ---- Drafting, Portfolio Review and Follow-up --------------------------------
+    // ---- Drafting --------------------------------
     { id: "DR-01", phase: "drafting", owner: "drafting", from: 2, for: "all", critical: false, ref: "SOP 03 / CEO standards",
       text: "Drive folder at Applications > Month-Year > Applicant Name_Qualification with all nine numbered sub-folders. Every document the applicant or agent sent downloaded, counted, renamed and filed in the right sub-folder. No loose files, duplicates or IMG_xxxx names." },
     { id: "DR-02", phase: "drafting", owner: "drafting", from: 2, for: "all", critical: true, ref: "SOP 03 / Rule 4",
@@ -154,27 +158,28 @@ const CRITERIA = {
       text: "ID documents usable (legible, four corners visible, current where required) and totalling 100 points, or the shortfall recorded as points still needed, not as a document name. A bank card never counted as ID." },
     { id: "DR-04", phase: "drafting", owner: "drafting", from: 2, for: "all", critical: true, ref: "SOP 05",
       text: "USI is 10 characters, name matches the passport, VET transcript filed. Any existing qualification in the same field reported." },
-    { id: "DR-06", phase: "drafting", owner: "drafting", from: 2, for: "all", critical: true, ref: "Rule 7",
-      text: "Personal information protected: ID documents stayed in the applicant's Drive folder. Surname, date of birth and ID numbers blurred in any screenshot, training material or chat." },
     { id: "DR-07", phase: "drafting", owner: "drafting", from: 2, for: "all", critical: true, ref: "CEO standards / checklist prerequisites",
       text: "Where the qualification has a prerequisite (Prerequisite field on the opportunity, asterisked on the checklist), evidence that it is met was collected and filed. The file not treated as complete without it." },
-    { id: "RV-01", phase: "drafting", owner: "review", from: 2, for: "noncompliant", critical: true, ref: "SOP 07 / ATSR practice",
+
+    // ---- Portfolio Review and Follow-up ----------------------------------------
+    // RV-01 to RV-03 belong to whoever drafted the file: they know which documents to check and chase.
+    { id: "RV-01", phase: "review", owner: "drafting", from: 2, for: "noncompliant", critical: true, ref: "SOP 07 / ATSR practice",
       text: "Portfolio checked against the generic checklist and the bare minimum is in place: 100-point ID, USI or passport number, work evidence. Documents not scrutinised beyond that." },
-    { id: "RV-02", phase: "drafting", owner: "review", from: 2, for: "compliant", critical: true, ref: "SOP 07 / college process",
+    { id: "RV-02", phase: "review", owner: "drafting", from: 2, for: "compliant", critical: true, ref: "SOP 07 / college process",
       text: "Portfolio checked against this college's own checklist for this qualification, and the college's specific rules for this file followed (see the college notes shown above the checklist)." },
-    { id: "RV-03", phase: "drafting", owner: "review", from: 2, for: "all", critical: true, ref: "SOP 07 / Rule 5 / CEO standards",
+    { id: "RV-03", phase: "review", owner: "drafting", from: 2, for: "all", critical: true, ref: "SOP 07 / Rule 5 / CEO standards",
       text: "Missing Documents field accurate: the right items ticked, nothing irrelevant, cleared the same day items arrive and before the stage moved to Portfolio Sent to College." },
-    { id: "RV-04", phase: "drafting", owner: "review", from: 2, for: "all", critical: true, ref: "SOP 07 / Appendix A",
+    { id: "RV-04", phase: "review", owner: "review", from: 2, for: "all", critical: true, ref: "SOP 07 / Appendix A",
       text: "Stage matches reality: Incomplete Portfolio while anything is missing, Complete Portfolio only when nothing is." },
-    { id: "RV-05", phase: "drafting", owner: "review", from: 2, for: "all", critical: false, ref: "SOP 07 / SOP 14 / CEO standards",
+    { id: "RV-05", phase: "review", owner: "review", from: 2, for: "all", critical: false, ref: "SOP 07 / SOP 14 / CEO standards",
       text: "Missing-documents request (2.1) sent in the existing thread, lists the specific items still missing and nothing wrong or irrelevant (not already received, not required by this RTO). Follow-ups at the cadence for this file type (see the cadence above the checklist). Last File Update set every time." },
-    { id: "RV-09", phase: "drafting", owner: "review", from: 2, for: "all", critical: false, ref: "CEO standards",
+    { id: "RV-09", phase: "review", owner: "review", from: 2, for: "all", critical: false, ref: "CEO standards",
       text: "Missing documents asked for in one email (two at most) the first time, not drip-fed over several. Generic files: bare minimum only, communication kept short and straightforward, aiming to have the file complete within 2 days of receipt." },
-    { id: "RV-06", phase: "drafting", owner: "review", from: 2, for: "all", critical: false, ref: "SOP 07 / CEO standards",
+    { id: "RV-06", phase: "review", owner: "review", from: 2, for: "all", critical: false, ref: "SOP 07 / CEO standards",
       text: "File with no movement for more than 5 days escalated to the BD Manager and the escalation logged on the opportunity." },
-    { id: "RV-07", phase: "drafting", owner: "review", from: 2, for: "all", critical: false, ref: "CEO standards",
+    { id: "RV-07", phase: "review", owner: "review", from: 2, for: "all", critical: false, ref: "CEO standards",
       text: "Everything that arrived later by email or WhatsApp filed in the right sub-folder, and the GHL fields updated with what it told us: USI or passport number, Missing Documents, Current and Previous Visa." },
-    { id: "RV-08", phase: "drafting", owner: "review", from: 2, for: "compliant", critical: false, ref: "CEO standards / college process",
+    { id: "RV-08", phase: "review", owner: "review", from: 2, for: "compliant", critical: false, ref: "CEO standards / college process",
       text: "Compliant college: the applicant guided to the evidence the college needs. Where a document does not exist, an alternative from the college's accepted options suggested, so the file keeps moving." },
 
     // ---- On Hold (only while the file is on hold) --------------------------------
